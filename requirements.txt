@@ -1,0 +1,5 @@
+# The root experiment scripts currently use only the Python standard library.
+# Python 3.11+ is recommended; this workspace was validated with Python 3.11.9.
+#
+# Keep this file so the environment contract is explicit and reproducible.
+# Add package pins here when a root-level script gains a third-party dependency.

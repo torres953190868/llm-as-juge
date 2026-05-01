@@ -1,0 +1,40 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+llm-judge-env/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# External upstream/data checkout
+FastChat/
+
+# Generated experiment inputs, outputs, and probes
+mt_bench_questions_and_answers.txt
+mt_bench_questions_answers_padded_deepseek.jsonl
+mt_bench_questions_answers_padded_deepseek.txt
+length_bias_trials.jsonl
+length_bias_screened_samples.jsonl
+length_bias_eligible_samples.jsonl
+length_bias_screening_excluded_samples.jsonl
+length_bias_screening_summary.json
+excluded_length_bias_samples.jsonl
+failed_deepseek_padding.jsonl
+raw_*.jsonl
+parsed_length_bias_judgments.jsonl
+tmp_*.jsonl
+length_bias_summary.json
+length_bias_summary.txt
+length_bias_summary.svg
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
