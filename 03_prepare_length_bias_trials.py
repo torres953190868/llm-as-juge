@@ -1,6 +1,7 @@
 import argparse
 
 from length_bias_common import read_jsonl, utc_now, write_jsonl
+from length_bias_metadata import run_metadata
 
 
 DEFAULT_INPUT = "mt_bench_questions_answers_padded_deepseek.jsonl"
@@ -77,11 +78,13 @@ def make_trial(row, prompt_condition, condition):
     short_answer = row["original_answer"]
     ratio = get_length_ratio(row)
     turn_status, _ = answer_turn_status(row)
+    generated_at = utc_now()
 
     return {
         "trial_id": (
             f"q{row['question_id']}_{prompt_condition}_{condition}"
         ),
+        "bias_type": "length",
         "question_id": row["question_id"],
         "category": row["category"],
         "condition": condition,
@@ -95,7 +98,8 @@ def make_trial(row, prompt_condition, condition):
         "length_ratio": ratio,
         "answer_turn_status": turn_status,
         "padding_prompt_version": row.get("padding_prompt_version"),
-        "created_at": utc_now(),
+        "generated_at": generated_at,
+        "created_at": generated_at,
     }
 
 
@@ -106,6 +110,7 @@ def build_trials(rows, min_ratio, max_ratio, require_answer_turns=False):
     for row in rows:
         reason = exclusion_reason(row, min_ratio, max_ratio, require_answer_turns)
         if reason:
+            generated_at = utc_now()
             excluded.append(
                 {
                     "question_id": row.get("question_id"),
@@ -115,7 +120,8 @@ def build_trials(rows, min_ratio, max_ratio, require_answer_turns=False):
                     "original_word_count": row.get("original_word_count"),
                     "padded_word_count": row.get("padded_word_count"),
                     "padding_prompt_version": row.get("padding_prompt_version"),
-                    "created_at": utc_now(),
+                    "generated_at": generated_at,
+                    "created_at": generated_at,
                 }
             )
             continue
@@ -135,6 +141,22 @@ def run(args):
     trials, excluded = build_trials(
         rows, args.min_ratio, args.max_ratio, args.require_answer_turns
     )
+    metadata = run_metadata(
+        input_path=args.input,
+        extra={
+            "stage": "prepare_length_bias_trials",
+            "output": args.output,
+            "excluded_output": args.excluded_output,
+            "min_ratio": args.min_ratio,
+            "max_ratio": args.max_ratio,
+            "require_answer_turns": args.require_answer_turns,
+            "limit": args.limit,
+        },
+    )
+    for trial in trials:
+        trial["run_metadata"] = metadata
+    for row in excluded:
+        row["run_metadata"] = metadata
     print(f"Read {len(rows)} padded rows")
     print(f"Built {len(trials)} trials")
     print(f"Excluded {len(excluded)} rows")

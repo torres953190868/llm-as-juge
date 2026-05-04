@@ -32,6 +32,11 @@ tmp_*.jsonl
 length_bias_summary.json
 length_bias_summary.txt
 length_bias_summary.svg
+position_bias_trials.jsonl
+parsed_position_bias_judgments.jsonl
+position_bias_summary.json
+position_bias_summary.txt
+manipulation_check_trials.jsonl
 
 # OS/editor noise
 .DS_Store

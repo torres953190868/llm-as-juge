@@ -1,6 +1,5 @@
 import argparse
 import concurrent.futures
-import math
 import threading
 
 from length_bias_common import (
@@ -15,6 +14,13 @@ from length_bias_common import (
     utc_now,
     word_count,
 )
+from length_bias_metadata import maybe_file_sha256
+from length_bias_padding_metadata import (
+    make_accepted_run_metadata,
+    make_attempt_metadata,
+    make_base_run_metadata,
+)
+from length_bias_padding_prompt import build_payload
 from length_bias_padding_io import (
     append_padding_txt,
     load_completed_ids,
@@ -37,33 +43,6 @@ DEFAULT_MAX_RATIO = 2.0
 DEFAULT_PADDING_ATTEMPTS = 3
 DEFAULT_MAX_TOKENS = 4096
 DEFAULT_PARALLEL = 3
-
-
-SYSTEM_PROMPT = """You are creating length-padded answer variants for an LLM-as-a-judge bias experiment.
-
-Your task is to minimally expand the provided answer while preserving its meaning.
-
-Strict rules:
-- Do not improve the answer.
-- Do not make it more correct, more persuasive, better organized, or more complete.
-- Preserve the original answer's meaning, stance, factual claims, mistakes, omissions, order, tone, and formatting as much as possible.
-- Keep the original answer text as close as possible.
-- Only add redundant restatements, short clarifying transitions, and summary sentences that repeat existing information.
-- Do not add new facts, new examples, new citations, code, headings, bullet points, or stronger claims.
-- If the answer contains multiple turns or paragraphs, preserve their order and boundaries.
-- Target the length range specified by the user.
-- Return only the padded answer, with no commentary or labels."""
-
-
-USER_PROMPT_TEMPLATE = """Question:
-{question}
-
-{answer_label}:
-{answer}
-
-Word-count budget: original {original_word_count}; accepted {min_words}-{max_words} words ({min_percent}% to {max_percent}%); preferred target about {target_words} words.
-Minimally expand the answer as a length-padded variant, but do not stop until it is at least {min_words} words. Add neutral restatement sentences throughout the answer, especially after paragraphs or list items, while obeying all strict rules above.
-{retry_note}"""
 
 
 def build_arg_parser():
@@ -93,59 +72,16 @@ def build_arg_parser():
     return parser
 
 
-def build_payload(
+def make_result_row(
     sample,
+    padded_answer,
     model,
-    attempt=1,
-    min_ratio=DEFAULT_MIN_RATIO,
-    max_ratio=DEFAULT_MAX_RATIO,
-    max_tokens=DEFAULT_MAX_TOKENS,
-    previous_failure=None, draft_answer=None,
+    padded_answer_turns=None,
+    run_metadata_value=None,
 ):
-    original_word_count = word_count(sample["original_answer"])
-    min_words = math.ceil(original_word_count * min_ratio)
-    max_words = math.floor(original_word_count * max_ratio)
-    target_ratio = min(max_ratio, max(min_ratio + 0.15, min_ratio * 1.1))
-    target_words = min(max_words, max(min_words, math.ceil(original_word_count * target_ratio)))
-    answer = draft_answer or sample["original_answer"]
-    retry_note = ""
-    if attempt > 1 and previous_failure and previous_failure.get("padded_word_count"):
-        direction = "shorten it" if previous_failure["failed_reason"] == "above_max_length_ratio" else "expand it"
-        retry_note = (
-            f"Retry feedback: previous attempt produced {previous_failure['padded_word_count']} words "
-            f"({previous_failure['length_ratio']:.2f}x), rejected as {previous_failure['failed_reason']}. "
-            f"Revise the draft and {direction} to land inside {min_words}-{max_words} words."
-        )
-    elif attempt > 1:
-        retry_note = "Retry feedback: previous attempt failed. Generate a fresh padded answer inside the word-count budget."
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        question=sample["question"],
-        answer_label="Previous padded draft" if draft_answer else "Original answer",
-        answer=answer,
-        original_word_count=original_word_count,
-        min_words=min_words,
-        max_words=max_words,
-        target_words=target_words,
-        min_percent=int(min_ratio * 100 + 0.5),
-        max_percent=int(max_ratio * 100 + 0.5),
-        retry_note=retry_note,
-    )
-    return {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        "thinking": {"type": "disabled"},
-        "temperature": 0.2,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }
-
-
-def make_result_row(sample, padded_answer, model, padded_answer_turns=None):
     original_answer = sample["original_answer"]
     ratio = length_ratio(original_answer, padded_answer)
+    generated_at = utc_now()
     row = {
         "question_id": sample["question_id"],
         "category": sample["category"],
@@ -153,7 +89,8 @@ def make_result_row(sample, padded_answer, model, padded_answer_turns=None):
         "original_answer": original_answer,
         "padded_answer": padded_answer,
         "model": model,
-        "created_at": utc_now(),
+        "generated_at": generated_at,
+        "created_at": generated_at,
         "original_word_count": word_count(original_answer),
         "padded_word_count": word_count(padded_answer),
         "original_char_count": len(original_answer),
@@ -161,6 +98,8 @@ def make_result_row(sample, padded_answer, model, padded_answer_turns=None):
         "length_ratio": ratio,
         "padding_prompt_version": PROMPT_VERSION,
     }
+    if run_metadata_value is not None:
+        row["run_metadata"] = run_metadata_value
     if "question_turns" in sample:
         row["question_turns"] = sample["question_turns"]
     if "original_answer_turns" in sample:
@@ -216,6 +155,7 @@ def pad_answer_text(
     args,
     api_key,
     output_lock,
+    base_metadata,
     turn_index=None,
     turn_count=None,
 ):
@@ -229,14 +169,25 @@ def pad_answer_text(
             turn_sample, args.model, attempt, args.min_ratio, args.max_ratio,
             args.max_tokens, last_failure, last_padded_answer,
         )
+        attempt_metadata = make_attempt_metadata(
+            args,
+            payload,
+            base_metadata,
+            PROMPT_VERSION,
+            attempt,
+            turn_index,
+            turn_count,
+        )
         raw_row = {
             "question_id": question_id,
             "model": args.model,
             "attempt": attempt,
-            "created_at": utc_now(),
+            "generated_at": attempt_metadata["generated_at"],
+            "created_at": attempt_metadata["created_at"],
             "padding_prompt_version": PROMPT_VERSION,
         }
         add_turn_metadata(raw_row, turn_index, turn_count)
+        raw_row["run_metadata"] = attempt_metadata
 
         try:
             response = call_with_retries(DEEPSEEK_ENDPOINT, payload, api_key)
@@ -252,7 +203,7 @@ def pad_answer_text(
                 append_jsonl(args.raw_output, raw_row)
 
             if failure is None:
-                return padded_answer, None
+                return padded_answer, None, attempt_metadata
 
             last_failure = {
                 "question_id": question_id,
@@ -262,8 +213,10 @@ def pad_answer_text(
                 "length_ratio": result_row["length_ratio"],
                 "original_word_count": result_row["original_word_count"],
                 "padded_word_count": result_row["padded_word_count"],
-                "created_at": utc_now(),
+                "generated_at": attempt_metadata["generated_at"],
+                "created_at": attempt_metadata["created_at"],
                 "padding_prompt_version": PROMPT_VERSION,
+                "run_metadata": attempt_metadata,
             }
             add_turn_metadata(last_failure, turn_index, turn_count)
             last_padded_answer = padded_answer
@@ -282,31 +235,35 @@ def pad_answer_text(
                 "attempt": attempt,
                 "failed_reason": "api_error",
                 "error": details,
-                "created_at": utc_now(),
+                "generated_at": attempt_metadata["generated_at"],
+                "created_at": attempt_metadata["created_at"],
                 "padding_prompt_version": PROMPT_VERSION,
+                "run_metadata": attempt_metadata,
             }
             add_turn_metadata(last_failure, turn_index, turn_count)
             print(f"Attempt {attempt} failed for question_id {question_id}: {exc}")
 
-    return None, last_failure
+    return None, last_failure, None
 
 
-def process_sample(sample, index, total, args, api_key, output_lock):
+def process_sample(sample, index, total, args, api_key, output_lock, base_metadata):
     question_id = sample["question_id"]
     turns = sample_answer_turns(sample)
     structured_turns = has_structured_answer_turns(sample)
     print(f"[{index}/{total}] Padding question_id {question_id}")
 
     padded_turns = []
+    turn_metadatas = []
     for turn_index, answer_text in enumerate(turns, start=1):
         if structured_turns:
             print(f"Padding question_id {question_id} turn {turn_index}/{len(turns)}")
-        padded_answer, failure = pad_answer_text(
+        padded_answer, failure, turn_metadata = pad_answer_text(
             sample,
             answer_text,
             args,
             api_key,
             output_lock,
+            base_metadata,
             turn_index if structured_turns else None,
             len(turns) if structured_turns else None,
         )
@@ -315,13 +272,18 @@ def process_sample(sample, index, total, args, api_key, output_lock):
                 append_jsonl(args.failed_output, failure)
             return f"Failed question_id {question_id}: no acceptable padded answer"
         padded_turns.append(padded_answer)
+        turn_metadatas.append(turn_metadata)
 
     padded_answer = join_turns(padded_turns) if structured_turns else padded_turns[0]
+    accepted_metadata = make_accepted_run_metadata(
+        args, base_metadata, turn_metadatas, PROMPT_VERSION
+    )
     accepted_row = make_result_row(
         sample,
         padded_answer,
         args.model,
         padded_turns if structured_turns else None,
+        accepted_metadata,
     )
     with output_lock:
         append_jsonl(args.output_jsonl, accepted_row)
@@ -333,10 +295,12 @@ def run(args):
     samples = load_padding_samples(args.input, args.input_format)
     if args.limit is not None:
         samples = samples[:args.limit]
+    base_metadata = make_base_run_metadata(args, PROMPT_VERSION)
 
     if args.dry_run:
         ids = [sample["question_id"] for sample in samples]
         print(f"Parsed {len(samples)} samples from {args.input}")
+        print(f"Input SHA256: {maybe_file_sha256(args.input)}")
         print("Question IDs: " + ", ".join(str(item) for item in ids))
         if samples:
             first = samples[0]
@@ -373,7 +337,16 @@ def run(args):
     print(f"Running with parallel={max_workers}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(process_sample, sample, index, total, args, api_key, output_lock)
+            executor.submit(
+                process_sample,
+                sample,
+                index,
+                total,
+                args,
+                api_key,
+                output_lock,
+                base_metadata,
+            )
             for index, sample in pending
         ]
         for future in concurrent.futures.as_completed(futures):

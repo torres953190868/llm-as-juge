@@ -1,40 +1,22 @@
 import argparse
-import json
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from length_bias_common import (
-    DEEPSEEK_API_KEY_ENV,
-    DEEPSEEK_ENDPOINT,
-    append_jsonl,
-    call_with_retries,
-    error_details,
-    extract_chat_content,
-    get_api_key,
-    read_jsonl,
-    truncate_file,
-    utc_now,
-    write_jsonl,
-)
+from length_bias_common import DEEPSEEK_API_KEY_ENV, DEEPSEEK_ENDPOINT
+from length_bias_common import append_jsonl, call_with_retries, error_details
+from length_bias_common import extract_chat_content, get_api_key, read_jsonl
+from length_bias_common import truncate_file, utc_now, write_jsonl
+from length_bias_judge import DEEPSEEK_MODEL, build_payload, build_user_prompt
+from length_bias_judge import load_judge_configs
+from length_bias_judge import long_answer_won, parse_winner
+from length_bias_metadata import maybe_file_sha256, prompt_hash_metadata
+from length_bias_metadata import sanitize_judge_config
 
 
 DEFAULT_TRIALS = "length_bias_trials.jsonl"
 DEFAULT_RAW_OUTPUT = "raw_length_bias_judgments.jsonl"
 DEFAULT_PARSED_OUTPUT = "parsed_length_bias_judgments.jsonl"
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = DEEPSEEK_MODEL
 DEFAULT_ENV_FILE = ".env"
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
-GEMINI_MODEL = "gemini-3-flash-preview"
-XIAOMI_ENDPOINT = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"
-XIAOMI_API_KEY_ENV = "XIAOMI_API_KEY"
-XIAOMI_MODEL = "mimo-v2-pro"
-
-
-STANDARD_SYSTEM_PROMPT = """Please act as an impartial judge and evaluate the quality of the responses provided by two AI assistants to the user question displayed below. You should choose the assistant that follows the user's instructions and answers the user's question better. Your evaluation should consider factors such as helpfulness, relevance, accuracy, depth, creativity, and level of detail. Avoid position bias and ensure that the order in which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Be as objective as possible. After providing a short explanation, output your final verdict strictly as [[A]] if assistant A is better, [[B]] if assistant B is better, and [[C]] for a tie."""
-
-
-NEUTRAL_SYSTEM_PROMPT = """Please act as an impartial judge and evaluate the quality of the responses provided by two AI assistants to the user question displayed below. You should choose the assistant that follows the user's instructions and answers the user's question better. Your evaluation should consider factors such as helpfulness, relevance, accuracy, depth, creativity, and level of detail. Avoid position bias and ensure that the order in which the responses were presented does not influence your decision. Be as objective as possible. After providing a short explanation, output your final verdict strictly as [[A]] if assistant A is better, [[B]] if assistant B is better, and [[C]] for a tie."""
 
 
 def build_arg_parser():
@@ -56,65 +38,6 @@ def build_arg_parser():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--parallel", type=int, default=3)
     return parser
-
-
-def deepseek_judge_config(model):
-    return {
-        "judge_model": model,
-        "model": model,
-        "endpoint": DEEPSEEK_ENDPOINT,
-        "api_key_env": DEEPSEEK_API_KEY_ENV,
-        "temperature": 0.0,
-        "max_tokens": 4096,
-        "extra_body": {"thinking": {"type": "disabled"}},
-    }
-
-
-def gemini_judge_config():
-    return {
-        "judge_model": GEMINI_MODEL,
-        "model": GEMINI_MODEL,
-        "endpoint": GEMINI_ENDPOINT,
-        "api_key_env": GEMINI_API_KEY_ENV,
-        "temperature": 1.0,
-        "max_tokens": 4096,
-        "extra_body": {"reasoning_effort": "low"},
-    }
-
-
-def xiaomi_judge_config():
-    return {
-        "judge_model": XIAOMI_MODEL,
-        "model": XIAOMI_MODEL,
-        "endpoint": XIAOMI_ENDPOINT,
-        "api_key_env": XIAOMI_API_KEY_ENV,
-        "temperature": 0.0,
-        "max_tokens": 4096,
-    }
-
-
-def builtin_judge_configs(args):
-    configs = []
-    if args.deepseek:
-        configs.append(deepseek_judge_config(args.judge_model))
-    if args.gemini:
-        configs.append(gemini_judge_config())
-    if args.xiaomi:
-        configs.append(xiaomi_judge_config())
-    return configs
-
-
-def load_judge_configs(args):
-    path = args.judge_config
-    if not path:
-        return builtin_judge_configs(args)
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    configs = data.get("judges", data) if isinstance(data, dict) else data
-    if not isinstance(configs, list) or not configs:
-        raise ValueError("judge config must be a non-empty list or {'judges': [...]}")
-    return configs
 
 
 def completed_keys(path):
@@ -142,84 +65,86 @@ def remove_invalid_parsed_rows(path, retry_keys):
     return removed
 
 
-def system_prompt(prompt_condition):
-    if prompt_condition == "standard_anti_length":
-        return STANDARD_SYSTEM_PROMPT
-    if prompt_condition == "neutral_no_length":
-        return NEUTRAL_SYSTEM_PROMPT
-    raise ValueError(f"Unknown prompt_condition: {prompt_condition}")
-
-
-def render_question(turns):
-    if len(turns) == 1:
-        return turns[0]
-    return "\n\n".join(
-        f"Turn {index}:\n{text}" for index, text in enumerate(turns, start=1)
+def prompt_metadata(payload):
+    messages = payload.get("messages", [])
+    system_text = "\n\n".join(
+        message.get("content", "")
+        for message in messages
+        if message.get("role") == "system"
     )
-
-
-def build_user_prompt(trial):
-    return (
-        "[User Question]\n"
-        f"{render_question(trial['question_turns'])}\n\n"
-        "[The Start of Assistant A's Answer]\n"
-        f"{trial['answer_a']}\n"
-        "[The End of Assistant A's Answer]\n\n"
-        "[The Start of Assistant B's Answer]\n"
-        f"{trial['answer_b']}\n"
-        "[The End of Assistant B's Answer]"
+    user_text = "\n\n".join(
+        message.get("content", "")
+        for message in messages
+        if message.get("role") == "user"
     )
+    return prompt_hash_metadata(system_text, user_text)
 
 
-def build_payload(trial, config):
-    payload = {
+def judgment_metadata(config, payload, trials_path=None, trials_sha256=None):
+    generated_at = utc_now()
+    return {
+        "generated_at": generated_at,
+        "created_at": generated_at,
+        "judge_config": sanitize_judge_config(config),
         "model": config.get("model", config["judge_model"]),
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt(trial["prompt_condition"]),
-            },
-            {"role": "user", "content": build_user_prompt(trial)},
-        ],
+        "judge_model": config["judge_model"],
         "temperature": config.get("temperature", 0.0),
-        "max_tokens": config.get("max_tokens", 4096),
-        "stream": False,
+        "endpoint": config.get("endpoint", DEEPSEEK_ENDPOINT),
+        "input_path": trials_path,
+        "input_sha256": trials_sha256,
+        "trials_path": trials_path,
+        "trials_sha256": trials_sha256,
+        **prompt_metadata(payload),
     }
-    payload.update(config.get("extra_body", {}))
-    return payload
 
 
-def parse_winner(text):
-    matches = re.findall(r"\[\[\s*([ABC])\s*\]\]", text)
-    if not matches:
-        return "invalid"
-    verdict = matches[-1]
-    if verdict == "C":
-        return "tie"
-    return verdict
-
-
-def long_answer_won(winner, long_answer_position):
+def position_source_winner(trial, winner):
     if winner in ("invalid", "tie"):
         return None
-    return winner == long_answer_position
+    if winner == trial.get("model_a_position"):
+        return trial.get("source_model_a")
+    return trial.get("source_model_b")
 
 
-def make_parsed_row(trial, judge_model, winner, raw_ref):
+def make_outcome_fields(trial, winner):
+    bias_type = trial.get("bias_type", "length")
+    if bias_type == "position":
+        return {
+            "model_a_position": trial.get("model_a_position"),
+            "source_model_a": trial.get("source_model_a"),
+            "source_model_b": trial.get("source_model_b"),
+            "model_a_won": (
+                None if winner in ("invalid", "tie")
+                else winner == trial.get("model_a_position")
+            ),
+            "position_winner": winner if winner in ("A", "B") else None,
+            "source_model_winner": position_source_winner(trial, winner),
+        }
     return {
+        "long_answer_won": long_answer_won(
+            winner, trial["long_answer_position"]
+        ),
+    }
+
+
+def make_parsed_row(trial, judge_model, winner, raw_ref, metadata):
+    generated_at = utc_now()
+    row = {
         "trial_id": trial["trial_id"],
         "judge_model": judge_model,
+        "bias_type": trial.get("bias_type", "length"),
         "question_id": trial["question_id"],
         "category": trial["category"],
         "condition": trial["condition"],
         "prompt_condition": trial["prompt_condition"],
         "winner": winner,
-        "long_answer_won": long_answer_won(
-            winner, trial["long_answer_position"]
-        ),
         "raw_output_ref": raw_ref,
-        "created_at": utc_now(),
+        "run_metadata": metadata,
+        "generated_at": generated_at,
+        "created_at": generated_at,
     }
+    row.update(make_outcome_fields(trial, winner))
+    return row
 
 
 def validate_api_keys(configs, args):
@@ -247,17 +172,23 @@ def log_result(result, stats_by_judge, args):
         print(f"[{result['index']}/{result['total']}] {result['trial_id']} {result['judge_model']} -> {result['winner']}")
 
 
-def judge_trial(config, trial, index, total, api_key):
+def judge_trial(config, trial, index, total, api_key, trials_path, trials_sha256):
     judge_model = config["judge_model"]
-    raw_ref = f"{judge_model}:{trial['trial_id']}:{utc_now()}"
+    generated_at = utc_now()
+    raw_ref = f"{judge_model}:{trial['trial_id']}:{generated_at}"
     raw_row = {
         "raw_output_ref": raw_ref,
         "trial_id": trial["trial_id"],
         "judge_model": judge_model,
-        "created_at": utc_now(),
+        "bias_type": trial.get("bias_type", "length"),
+        "generated_at": generated_at,
+        "created_at": generated_at,
     }
+    metadata = None
     try:
         payload = build_payload(trial, config)
+        metadata = judgment_metadata(config, payload, trials_path, trials_sha256)
+        raw_row["run_metadata"] = metadata
         endpoint = config.get("endpoint", DEEPSEEK_ENDPOINT)
         response = call_with_retries(endpoint, payload, api_key)
         content = extract_chat_content(response)
@@ -281,7 +212,7 @@ def judge_trial(config, trial, index, total, api_key):
         "winner": winner,
         "error": error,
         "raw_row": raw_row,
-        "parsed_row": make_parsed_row(trial, judge_model, winner, raw_ref),
+        "parsed_row": make_parsed_row(trial, judge_model, winner, raw_ref, metadata),
     }
 
 
@@ -328,6 +259,7 @@ def run(args):
         config["judge_model"]: {"completed": 0, "skipped": 0, "failed": 0}
         for config in configs
     }
+    trials_sha256 = maybe_file_sha256(args.trials)
     tasks = []
     retry_keys = set()
     for config in configs:
@@ -349,7 +281,19 @@ def run(args):
         print(f"Removed {removed} previous invalid parsed row(s) before retrying")
 
     executor = ThreadPoolExecutor(max_workers=args.parallel)
-    futures = [executor.submit(judge_trial, config, trial, index, total, api_key) for config, trial, index, total, api_key in tasks]
+    futures = [
+        executor.submit(
+            judge_trial,
+            config,
+            trial,
+            index,
+            total,
+            api_key,
+            args.trials,
+            trials_sha256,
+        )
+        for config, trial, index, total, api_key in tasks
+    ]
     print(f"Submitted {len(futures)} request(s)")
     handled = set()
     interrupted = False

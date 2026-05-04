@@ -1,19 +1,30 @@
 import argparse
 import json
 from collections import defaultdict
-from itertools import combinations
 
 from length_bias_common import read_jsonl
+from length_bias_judge import DEEPSEEK_MODEL, GEMINI_MODEL, XIAOMI_MODEL
+from length_bias_metadata import run_metadata
+from length_bias_pairing import PAIR_PATTERNS, summarize_swapped_pairs
 from length_bias_plotting import render_academic_svg
+from length_bias_statistics import (
+    DEFAULT_BOOTSTRAP_ITERATIONS,
+    DEFAULT_BOOTSTRAP_SEED,
+    build_sample_coverage,
+    build_statistical_summary,
+    compare_judge_results,
+    render_statistics_text,
+)
 
 
 DEFAULT_INPUT = "parsed_length_bias_judgments.jsonl"
 DEFAULT_OUTPUT_JSON = "length_bias_summary.json"
 DEFAULT_OUTPUT_TXT = "length_bias_summary.txt"
 DEFAULT_OUTPUT_IMAGE = "length_bias_summary.svg"
-DEEPSEEK_MODEL = "deepseek-v4-flash"
-GEMINI_MODEL = "gemini-3-flash-preview"
-XIAOMI_MODEL = "mimo-v2-pro"
+DEFAULT_SCREENING_SUMMARY = "length_bias_screening_summary.json"
+DEFAULT_SCREENED = "length_bias_screened_samples.jsonl"
+DEFAULT_PADDED = "mt_bench_questions_answers_padded_deepseek.jsonl"
+DEFAULT_TRIALS = "length_bias_trials.jsonl"
 
 
 def build_arg_parser():
@@ -27,6 +38,16 @@ def build_arg_parser():
     parser.add_argument("--deepseek", type=int, choices=(0, 1), default=1)
     parser.add_argument("--gemini", type=int, choices=(0, 1), default=1)
     parser.add_argument("--xiaomi", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--bootstrap-seed", type=int, default=DEFAULT_BOOTSTRAP_SEED)
+    parser.add_argument(
+        "--bootstrap-iterations",
+        type=int,
+        default=DEFAULT_BOOTSTRAP_ITERATIONS,
+    )
+    parser.add_argument("--screening-summary", default=DEFAULT_SCREENING_SUMMARY)
+    parser.add_argument("--screened", default=DEFAULT_SCREENED)
+    parser.add_argument("--padded", default=DEFAULT_PADDED)
+    parser.add_argument("--trials", default=DEFAULT_TRIALS)
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -93,7 +114,11 @@ def selected_judge_models(args):
 
 def filter_rows_by_judge(rows, judge_models):
     selected = set(judge_models)
-    return [row for row in rows if row.get("judge_model") in selected]
+    return [
+        row for row in rows
+        if row.get("judge_model") in selected
+        and row.get("bias_type", "length") == "length"
+    ]
 
 
 def summarize_by_judge(rows):
@@ -103,72 +128,6 @@ def summarize_by_judge(rows):
     return {
         judge: finalize_counts(counts)
         for judge, counts in sorted(by_judge.items())
-    }
-
-
-def compare_judge_results(rows, max_disagreements=20):
-    by_trial = defaultdict(dict)
-    for row in rows:
-        trial_id = row.get("trial_id")
-        judge = row.get("judge_model", "unknown")
-        if trial_id:
-            by_trial[trial_id][judge] = row
-
-    pair_counts = defaultdict(
-        lambda: {
-            "common_trials": 0,
-            "winner_agreements": 0,
-            "length_preference_agreements": 0,
-        }
-    )
-    disagreements = []
-    for trial_id, judge_rows in sorted(by_trial.items()):
-        if len(judge_rows) < 2:
-            continue
-        judges = sorted(judge_rows)
-        for left, right in combinations(judges, 2):
-            left_row = judge_rows[left]
-            right_row = judge_rows[right]
-            counts = pair_counts[(left, right)]
-            counts["common_trials"] += 1
-            if left_row.get("winner") == right_row.get("winner"):
-                counts["winner_agreements"] += 1
-            if left_row.get("long_answer_won") == right_row.get("long_answer_won"):
-                counts["length_preference_agreements"] += 1
-        winners = {row.get("winner") for row in judge_rows.values()}
-        length_prefs = {row.get("long_answer_won") for row in judge_rows.values()}
-        if (len(winners) > 1 or len(length_prefs) > 1) and len(disagreements) < max_disagreements:
-            first = next(iter(judge_rows.values()))
-            disagreements.append(
-                {
-                    "trial_id": trial_id,
-                    "question_id": first.get("question_id"),
-                    "category": first.get("category"),
-                    "condition": first.get("condition"),
-                    "prompt_condition": first.get("prompt_condition"),
-                    "judges": {
-                        judge: {
-                            "winner": row.get("winner"),
-                            "long_answer_won": row.get("long_answer_won"),
-                        }
-                        for judge, row in sorted(judge_rows.items())
-                    },
-                }
-            )
-
-    pairwise = {}
-    for (left, right), counts in sorted(pair_counts.items()):
-        common = counts["common_trials"]
-        pairwise[f"{left}::{right}"] = {
-            **counts,
-            "winner_agreement_rate": safe_div(counts["winner_agreements"], common),
-            "length_preference_agreement_rate": safe_div(
-                counts["length_preference_agreements"], common
-            ),
-        }
-    return {
-        "pairwise_agreement": pairwise,
-        "disagreements": disagreements,
     }
 
 
@@ -207,6 +166,7 @@ def summarize(rows, selected_models=None, source_row_count=None):
         add_row(by_question[question_key], row)
 
     comparison = compare_judge_results(rows)
+    swapped_pairs = summarize_swapped_pairs(rows)
     return {
         "selected_judge_models": selected_models or [],
         "source_row_count": len(rows) if source_row_count is None else source_row_count,
@@ -215,6 +175,7 @@ def summarize(rows, selected_models=None, source_row_count=None):
         "by_judge": summarize_by_judge(rows),
         "cross_judge_agreement": comparison["pairwise_agreement"],
         "judge_disagreements": comparison["disagreements"],
+        "swapped_pair_analysis": swapped_pairs,
         "by_judge_prompt": {
             f"{judge}::{prompt}": finalize_counts(counts)
             for (judge, prompt), counts in sorted(by_judge_prompt.items())
@@ -260,6 +221,7 @@ def render_text(summary):
     )
     lines.append("")
     lines.append(render_section_line("overall", overall))
+    lines.extend(render_statistics_text(summary))
     lines.append("")
     lines.append("By judge")
     lines.append("--------")
@@ -279,6 +241,22 @@ def render_text(summary):
     else:
         lines.append("n/a")
     lines.append(f"Disagreement examples: {len(summary['judge_disagreements'])}")
+    lines.append("")
+    lines.append("Swapped long_A / long_B pairs")
+    lines.append("-----------------------------")
+    swapped_pairs = summary.get("swapped_pair_analysis", {})
+    if swapped_pairs:
+        lines.append(render_pair_line("overall", swapped_pairs["overall"]))
+        lines.append("")
+        lines.append("By judge")
+        for key, counts in swapped_pairs["by_judge"].items():
+            lines.append(render_pair_line(key, counts))
+        lines.append("")
+        lines.append("By judge and prompt")
+        for key, counts in swapped_pairs["by_judge_prompt"].items():
+            lines.append(render_pair_line(key, counts))
+    else:
+        lines.append("n/a")
     lines.append("")
     lines.append("By judge and prompt")
     lines.append("-------------------")
@@ -314,6 +292,19 @@ def render_section_line(label, counts):
     )
 
 
+def render_pair_line(label, counts):
+    pattern_text = ", ".join(
+        f"{pattern}={counts.get(pattern, 0)}" for pattern in PAIR_PATTERNS
+    )
+    return (
+        f"{label}: total_pairs={counts['total_pairs']}, "
+        f"{pattern_text}, "
+        f"long_consistent_rate={percent(counts['long_consistent_rate'])}, "
+        f"position_A_rate={percent(counts['position_A_rate'])}, "
+        f"tie_both_rate={percent(counts['tie_both_rate'])}"
+    )
+
+
 def run(args):
     judge_models = selected_judge_models(args)
     if not judge_models:
@@ -325,6 +316,32 @@ def run(args):
         rows,
         selected_models=judge_models,
         source_row_count=len(source_rows),
+    )
+    summary["statistical_analysis"] = build_statistical_summary(
+        rows,
+        seed=args.bootstrap_seed,
+        iterations=args.bootstrap_iterations,
+    )
+    summary["sample_coverage"] = build_sample_coverage(
+        rows,
+        screening_summary_path=args.screening_summary,
+        screened_path=args.screened,
+        padded_path=args.padded,
+        trials_path=args.trials,
+    )
+    summary["run_metadata"] = run_metadata(
+        args.input,
+        extra={
+            "stage": "analyze_length_bias_results",
+            "bootstrap_seed": args.bootstrap_seed,
+            "bootstrap_iterations": args.bootstrap_iterations,
+            "coverage_paths": {
+                "screening_summary": args.screening_summary,
+                "screened": args.screened,
+                "padded": args.padded,
+                "trials": args.trials,
+            },
+        },
     )
     text = render_text(summary)
     print(f"Read {len(source_rows)} parsed judgment rows")

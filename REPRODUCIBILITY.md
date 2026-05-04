@@ -27,11 +27,38 @@ After changing scripts, run the smallest relevant check first:
 
 ```powershell
 python -m py_compile "length_bias_common.py" "length_bias_samples.py"
-python "screen_length_bias_eligibility.py" --dry-run
-python "prepare_length_bias_trials.py" --dry-run
-python "analyze_length_bias_results.py" --dry-run
+python "01_screen_length_bias_eligibility.py" --dry-run
+python "03_prepare_length_bias_trials.py" --dry-run
+python "06_prepare_position_bias_trials.py" --dry-run --limit 2
+python "07_prepare_manipulation_check_trials.py" --dry-run --limit 2
+python "05_analyze_length_bias_results.py" --dry-run
 ```
 
 The `FastChat/` directory is treated as an external data/source checkout. If it is
 missing, restore it separately before running data preparation commands that read
 MT-Bench files.
+
+## Current Pilot Scope
+
+The current length-bias dataset is a pilot run. The observed attrition is
+`80 -> 28 -> 17`: 80 screened MT-Bench rows, 28 eligible rows, and 17 questions
+with parsed judge results. The current parsed file has 204 rows, interpreted as
+`17 questions x 2 prompts x 2 positions x 3 judges`.
+
+Category coverage is limited by the screening and padding stages. Current parsed
+coverage is concentrated in humanities, roleplay, and STEM, so the results should
+not be described as full MT-Bench coverage.
+
+Length-bias and position-bias claims should remain separate. The length-bias
+pipeline includes swapped `long_A` / `long_B` trials as a control, but a final
+position-bias claim requires its own experiment and analysis plan.
+
+Final length-bias claims require a manipulation check: padded answers must be
+verified to preserve meaning while changing answer length. Dry-run commands do
+not call paid APIs; paid API usage starts only when padding or judging scripts
+are run without `--dry-run`.
+
+Position-bias trial preparation is separate from length-bias trial preparation.
+Use `06_prepare_position_bias_trials.py` to build original-answer swapped A/B
+trials and `08_analyze_position_bias_results.py` for parsed position-judgment
+summaries.

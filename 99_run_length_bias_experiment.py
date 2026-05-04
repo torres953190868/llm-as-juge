@@ -17,6 +17,9 @@ def build_arg_parser():
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--judge-config", default=None)
     parser.add_argument("--judge-model", default="deepseek-v4-flash")
+    parser.add_argument("--deepseek", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--gemini", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--xiaomi", type=int, choices=(0, 1), default=1)
     return parser
 
 
@@ -43,22 +46,28 @@ def common_flags(args, include_overwrite=False):
 
 
 def prepare_command(args):
-    return command("prepare_length_bias_trials.py", common_flags(args))
+    return command("03_prepare_length_bias_trials.py", common_flags(args))
 
 
 def judge_command(args):
     flags = common_flags(args, include_overwrite=True)
     flags.extend(["--judge-model", args.judge_model])
+    flags.extend(["--deepseek", str(args.deepseek)])
+    flags.extend(["--gemini", str(args.gemini)])
+    flags.extend(["--xiaomi", str(args.xiaomi)])
     if args.judge_config:
         flags.extend(["--judge-config", args.judge_config])
-    return command("run_length_bias_judge.py", flags)
+    return command("04_run_length_bias_judge.py", flags)
 
 
 def analyze_command(args):
     flags = []
     if args.dry_run:
         flags.append("--dry-run")
-    return command("analyze_length_bias_results.py", flags)
+    flags.extend(["--deepseek", str(args.deepseek)])
+    flags.extend(["--gemini", str(args.gemini)])
+    flags.extend(["--xiaomi", str(args.xiaomi)])
+    return command("05_analyze_length_bias_results.py", flags)
 
 
 def run(args):

@@ -149,6 +149,7 @@ def make_screened_row(question_row, answer_row, args):
     eligibility, exclusion_reasons, review_reasons = classify_sample(
         question_row, turns, args
     )
+    generated_at = utc_now()
 
     row = {
         "question_id": question_row["question_id"],
@@ -168,7 +169,8 @@ def make_screened_row(question_row, answer_row, args):
         "original_char_count": len(answer_text),
         "original_turn_word_counts": [word_count(turn) for turn in turns],
         "screening_version": SCREENING_VERSION,
-        "created_at": utc_now(),
+        "generated_at": generated_at,
+        "created_at": generated_at,
     }
     return row
 

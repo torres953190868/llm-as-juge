@@ -11,6 +11,7 @@ MODEL_LABELS = {
 def render_academic_svg(summary):
     judges = summary.get("selected_judge_models") or list(summary["by_judge"])
     by_judge = summary["by_judge"]
+    paired_by_judge = summary.get("swapped_pair_analysis", {}).get("by_judge", {})
     count_keys = [
         ("long_wins", "#4c78a8"),
         ("short_wins", "#b55d60"),
@@ -21,14 +22,28 @@ def render_academic_svg(summary):
         [by_judge.get(judge, {}).get(key, 0) for judge in judges for key, _ in count_keys]
         or [1]
     )
+    paired_keys = [
+        ("long_both_positions", "#4c78a8"),
+        ("position_A_both", "#d08b39"),
+        ("tie_both", "#6b6b6b"),
+        ("mixed_or_partial_tie", "#7f6bb2"),
+    ]
+    max_pair_count = max(
+        [
+            paired_by_judge.get(judge, {}).get(key, 0)
+            for judge in judges
+            for key, _ in paired_keys
+        ]
+        or [1]
+    )
     parts = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="620" viewBox="0 0 1120 620">',
-        '<rect width="1120" height="620" fill="#ffffff"/>',
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="860" viewBox="0 0 1120 860">',
+        '<rect width="1120" height="860" fill="#ffffff"/>',
         svg_text(56, 44, "Length-bias outcomes by LLM judge", 24, "#111111", "700"),
         svg_text(
             56,
             70,
-            "Filtered parsed judgments; bars report counts and rates by selected judge.",
+            "Filtered parsed judgments; top panels report trials, bottom panel reports swapped long_A/long_B pairs.",
             14,
             "#444444",
         ),
@@ -38,7 +53,7 @@ def render_academic_svg(summary):
             70,
             120,
             470,
-            330,
+            300,
             "A. Outcome counts",
             "Count",
             judges,
@@ -52,7 +67,7 @@ def render_academic_svg(summary):
             620,
             120,
             410,
-            330,
+            300,
             "B. Length-bias rates",
             "Percent",
             judges,
@@ -61,7 +76,22 @@ def render_academic_svg(summary):
             True,
         )
     )
-    parts.extend(render_legend(70, 500))
+    parts.extend(render_outcome_legend(70, 460))
+    parts.extend(
+        render_panel(
+            70,
+            535,
+            960,
+            250,
+            "C. Swapped pair patterns",
+            "Pair count",
+            judges,
+            paired_pattern_values(judges, paired_by_judge),
+            max(max_pair_count, 1),
+            False,
+        )
+    )
+    parts.extend(render_pair_legend(70, 812))
     parts.append("</svg>")
     return "\n".join(parts)
 
@@ -98,6 +128,19 @@ def rate_values(judges, by_judge):
             ]
         )
     return values
+
+
+def paired_pattern_values(judges, paired_by_judge):
+    keys = [
+        ("long_both_positions", "#4c78a8"),
+        ("position_A_both", "#d08b39"),
+        ("tie_both", "#6b6b6b"),
+        ("mixed_or_partial_tie", "#7f6bb2"),
+    ]
+    return [
+        [(paired_by_judge.get(judge, {}).get(key, 0), color) for key, color in keys]
+        for judge in judges
+    ]
 
 
 def render_panel(x, y, width, height, title, y_label, judges, values, max_value, allow_negative):
@@ -143,7 +186,7 @@ def add_ticks(parts, left, top, chart_height, baseline, scale, max_value, allow_
             parts.append(svg_text(left - 8, y + 4, str(tick), 11, "#111111", "400", "end"))
 
 
-def render_legend(x, y):
+def render_outcome_legend(x, y):
     items = [
         ("Long", "#4c78a8"),
         ("Short", "#b55d60"),
@@ -154,6 +197,21 @@ def render_legend(x, y):
     parts = [svg_text(x, y, "Legend", 14, "#111111", "700")]
     for index, (label, color) in enumerate(items):
         lx = x + index * 150
+        parts.append(f'<rect x="{lx}" y="{y + 18}" width="14" height="14" fill="{color}"/>')
+        parts.append(svg_text(lx + 20, y + 30, label, 13, "#111111"))
+    return parts
+
+
+def render_pair_legend(x, y):
+    items = [
+        ("Long both", "#4c78a8"),
+        ("A both", "#d08b39"),
+        ("Tie both", "#6b6b6b"),
+        ("Mixed", "#7f6bb2"),
+    ]
+    parts = [svg_text(x, y, "Swapped-pair legend", 14, "#111111", "700")]
+    for index, (label, color) in enumerate(items):
+        lx = x + index * 170
         parts.append(f'<rect x="{lx}" y="{y + 18}" width="14" height="14" fill="{color}"/>')
         parts.append(svg_text(lx + 20, y + 30, label, 13, "#111111"))
     return parts
