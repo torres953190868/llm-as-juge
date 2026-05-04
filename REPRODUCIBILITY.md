@@ -32,6 +32,7 @@ python "03_prepare_manipulation_check_trials.py" --dry-run --limit 2
 python "04_run_manipulation_check_judge.py" --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
 python "06_prepare_length_bias_trials.py" --dry-run
 python "09_prepare_position_bias_trials.py" --dry-run --limit 2
+python "11_run_position_bias_experiment.py" --dry-run --question-limit 2
 python "08_analyze_length_bias_results.py" --dry-run
 ```
 
@@ -62,6 +63,9 @@ APIs; paid API usage starts only when padding or judging scripts are run without
 `--dry-run`.
 
 Position-bias trial preparation is separate from length-bias trial preparation.
-Use `09_prepare_position_bias_trials.py` to build original-answer swapped A/B
-trials and `10_analyze_position_bias_results.py` for parsed position-judgment
-summaries.
+Use `11_run_position_bias_experiment.py` for the dedicated position-bias
+prepare/judge/analyze pipeline. It defaults to `gpt-4` vs `gpt-3.5-turbo` as
+the source-answer pair and `deepseek-v4-flash` as the only judge
+(`--deepseek 1 --gemini 0 --xiaomi 0`). The lower-level debugging path remains
+`09_prepare_position_bias_trials.py`, `07_run_length_bias_judge.py` with
+position-bias input/output paths, and `10_analyze_position_bias_results.py`.

@@ -133,6 +133,7 @@ Current dedicated scripts:
 - `length_bias_statistics.py`: helper module for question-cluster statistics, swapped-position paired statistics, deterministic bootstrap confidence intervals, data-shape interpretation, and sample coverage/attrition metadata.
 - `09_prepare_position_bias_trials.py`: build standalone position-bias swapped A/B trials from two original MT-Bench model-answer files; default pair is `gpt-4` vs `gpt-3.5-turbo`.
 - `10_analyze_position_bias_results.py`: summarize parsed position-bias judgments by source-model preference and A/B position preference.
+- `11_run_position_bias_experiment.py`: orchestration entrypoint for standalone position-bias prepare, judge, and analyze stages.
 - `99_run_length_bias_experiment.py`: orchestration entrypoint for legacy prepare/judge/analyze and checked-all stages.
 
 Default pilot constraints:
@@ -149,6 +150,9 @@ Default pilot constraints:
 - current pilot attrition: `80 -> 28 -> 17` from screened MT-Bench rows, to eligible rows, to analyzed questions with parsed judgments.
 - current pilot category coverage is limited after screening/padding and should not be described as full MT-Bench coverage.
 - length-bias and position-bias claims should remain separate; swapped `long_A` / `long_B` controls are not a full standalone position-bias experiment.
+- standalone position-bias default source pair: `gpt-4` vs `gpt-3.5-turbo`.
+- standalone position-bias default judge setting: DeepSeek `deepseek-v4-flash` only (`--deepseek 1 --gemini 0 --xiaomi 0`).
+- use `11_run_position_bias_experiment.py` for the dedicated position-bias prepare/judge/analyze pipeline.
 - final claims require a manipulation check that padded answers preserve meaning while changing answer length.
 - dry-run commands should not call paid APIs; paid API usage starts when padding or judging scripts run without `--dry-run`.
 

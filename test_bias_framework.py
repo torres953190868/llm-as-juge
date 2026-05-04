@@ -42,6 +42,85 @@ class BiasFrameworkTests(unittest.TestCase):
         self.assertTrue(all(row["bias_type"] == "position" for row in trials))
         self.assertTrue(all("padded_answer" not in row for row in trials))
 
+    def test_position_swapped_pair_analysis_classifies_bias_patterns(self):
+        analyzer = importlib.import_module("10_analyze_position_bias_results")
+
+        def row(question_id, condition, winner, model_a_won):
+            return {
+                "bias_type": "position",
+                "judge_model": "judge",
+                "prompt_condition": "neutral_no_length",
+                "question_id": question_id,
+                "source_model_a": "model-a",
+                "source_model_b": "model-b",
+                "condition": condition,
+                "winner": winner,
+                "model_a_won": model_a_won,
+            }
+
+        summary = analyzer.summarize_swapped_pairs(
+            [
+                row(1, "model_a_A", "A", True),
+                row(1, "model_a_B", "A", False),
+                row(2, "model_a_A", "A", True),
+                row(2, "model_a_B", "B", True),
+                row(3, "model_a_A", "B", False),
+                row(3, "model_a_B", "B", True),
+            ]
+        )
+
+        self.assertEqual(3, summary["total_pairs"])
+        self.assertEqual(1, summary["position_A_both"])
+        self.assertEqual(1, summary["position_B_both"])
+        self.assertEqual(1, summary["source_model_a_both"])
+
+    def test_position_summary_includes_category_and_binomial_test(self):
+        analyzer = importlib.import_module("10_analyze_position_bias_results")
+        rows = [
+            {
+                "bias_type": "position",
+                "judge_model": "judge",
+                "category": "writing",
+                "winner": winner,
+                "model_a_won": model_a_won,
+            }
+            for winner, model_a_won in (
+                ("A", True),
+                ("A", False),
+                ("A", True),
+                ("B", False),
+            )
+        ]
+
+        summary = analyzer.summarize(rows)
+
+        self.assertEqual(4, summary["overall"]["position_binomial_n"])
+        self.assertEqual(3, summary["overall"]["position_binomial_k"])
+        self.assertIsNotNone(summary["overall"]["position_a_vs_b_binomial_p"])
+        self.assertIn("writing", summary["by_category"])
+        self.assertIn("judge", summary["swapped_pair_analysis_by_judge"])
+
+    def test_position_orchestrator_builds_safe_default_dry_run_commands(self):
+        orchestrator = importlib.import_module("11_run_position_bias_experiment")
+        args = orchestrator.build_arg_parser().parse_args(
+            ["--dry-run", "--question-limit", "2"]
+        )
+
+        cmds = orchestrator.selected_commands(args)
+        rendered = [" ".join(cmd) for cmd in cmds]
+
+        self.assertEqual(3, len(cmds))
+        self.assertIn("09_prepare_position_bias_trials.py", rendered[0])
+        self.assertIn("--limit 2", rendered[0])
+        self.assertIn("07_run_length_bias_judge.py", rendered[1])
+        self.assertIn("--trials position_bias_trials.jsonl", rendered[1])
+        self.assertIn("--raw-output raw_position_bias_judgments.jsonl", rendered[1])
+        self.assertIn("--parsed-output parsed_position_bias_judgments.jsonl", rendered[1])
+        self.assertIn("--deepseek 1", rendered[1])
+        self.assertIn("--gemini 0", rendered[1])
+        self.assertIn("--xiaomi 0", rendered[1])
+        self.assertIn("10_analyze_position_bias_results.py", rendered[2])
+
     def test_manipulation_trial_has_required_criteria_and_hashes(self):
         row = {
             "question_id": 7,

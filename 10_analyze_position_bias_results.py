@@ -1,6 +1,7 @@
 import argparse
 import json
 from collections import defaultdict
+from math import comb
 
 from length_bias_common import read_jsonl
 from length_bias_metadata import run_metadata
@@ -32,6 +33,12 @@ def percent(value):
     if value is None:
         return "n/a"
     return f"{value * 100:.1f}%"
+
+
+def p_value(value):
+    if value is None:
+        return "n/a"
+    return f"{value:.4f}"
 
 
 def position_rows(rows):
@@ -74,6 +81,23 @@ def add_row(counts, row):
         counts["model_b_wins"] += 1
 
 
+def binomial_tail_probability(successes, trials, start, stop):
+    if trials == 0:
+        return None
+    total = 0
+    for value in range(start, stop):
+        total += comb(trials, value)
+    return total / (2 ** trials)
+
+
+def exact_binomial_two_sided(successes, trials):
+    if trials == 0:
+        return None
+    lower_tail = binomial_tail_probability(successes, trials, 0, successes + 1)
+    upper_tail = binomial_tail_probability(successes, trials, successes, trials + 1)
+    return min(1.0, 2 * min(lower_tail, upper_tail))
+
+
 def finalize_counts(counts):
     decisive = counts["model_a_wins"] + counts["model_b_wins"]
     position_decisive = counts["position_a_wins"] + counts["position_b_wins"]
@@ -81,6 +105,11 @@ def finalize_counts(counts):
     summary["decisive_total"] = decisive
     summary["model_a_win_rate"] = safe_div(counts["model_a_wins"], decisive)
     summary["position_a_win_rate"] = safe_div(
+        counts["position_a_wins"], position_decisive
+    )
+    summary["position_binomial_n"] = position_decisive
+    summary["position_binomial_k"] = counts["position_a_wins"]
+    summary["position_a_vs_b_binomial_p"] = exact_binomial_two_sided(
         counts["position_a_wins"], position_decisive
     )
     summary["tie_rate"] = safe_div(counts["ties"], counts["total"])
@@ -144,16 +173,30 @@ def summarize_swapped_pairs(rows):
 def summarize(rows):
     overall = empty_counts()
     by_judge = defaultdict(empty_counts)
+    by_category = defaultdict(empty_counts)
+    rows_by_judge = defaultdict(list)
     for row in rows:
         add_row(overall, row)
-        add_row(by_judge[row.get("judge_model", "unknown")], row)
+        judge = row.get("judge_model", "unknown")
+        category = row.get("category", "unknown")
+        add_row(by_judge[judge], row)
+        add_row(by_category[category], row)
+        rows_by_judge[judge].append(row)
     return {
         "overall": finalize_counts(overall),
         "by_judge": {
             judge: finalize_counts(counts)
             for judge, counts in sorted(by_judge.items())
         },
+        "by_category": {
+            category: finalize_counts(counts)
+            for category, counts in sorted(by_category.items())
+        },
         "swapped_pair_analysis": summarize_swapped_pairs(rows),
+        "swapped_pair_analysis_by_judge": {
+            judge: summarize_swapped_pairs(judge_rows)
+            for judge, judge_rows in sorted(rows_by_judge.items())
+        },
     }
 
 
@@ -165,7 +208,25 @@ def render_count_line(label, counts):
         f"position_B={counts['position_b_wins']}, ties={counts['ties']}, "
         f"invalid={counts['invalid']}, "
         f"model_a_win_rate={percent(counts['model_a_win_rate'])}, "
-        f"position_A_win_rate={percent(counts['position_a_win_rate'])}"
+        f"position_A_win_rate={percent(counts['position_a_win_rate'])}, "
+        f"position_A_vs_B_binomial_p="
+        f"{p_value(counts['position_a_vs_b_binomial_p'])}"
+    )
+
+
+def render_swapped_line(label, paired):
+    return (
+        f"{label}: total_pairs={paired.get('total_pairs', 0)}, "
+        f"source_model_a_both={paired.get('source_model_a_both', 0)}, "
+        f"source_model_b_both={paired.get('source_model_b_both', 0)}, "
+        f"position_A_both={paired.get('position_A_both', 0)}, "
+        f"position_B_both={paired.get('position_B_both', 0)}, "
+        f"tie_both={paired.get('tie_both', 0)}, "
+        f"invalid_pair={paired.get('invalid_pair', 0)}, "
+        f"missing_pair={paired.get('missing_pair', 0)}, "
+        f"mixed={paired.get('mixed_or_partial_tie', 0)}, "
+        f"position_A_consistent_rate="
+        f"{percent(paired.get('position_A_consistent_rate'))}"
     )
 
 
@@ -181,23 +242,43 @@ def render_text(summary):
     ]
     for judge, counts in summary["by_judge"].items():
         lines.append(render_count_line(judge, counts))
+    lines.extend(
+        [
+            "",
+            "By category",
+            "-----------",
+        ]
+    )
+    for category, counts in summary["by_category"].items():
+        lines.append(render_count_line(category, counts))
     paired = summary["swapped_pair_analysis"]
     lines.extend(
         [
             "",
             "Swapped pairs",
             "-------------",
+            render_swapped_line("overall", paired),
+            "",
+            "Swapped pairs by judge",
+            "----------------------",
+        ]
+    )
+    for judge, judge_pairs in summary["swapped_pair_analysis_by_judge"].items():
+        lines.append(render_swapped_line(judge, judge_pairs))
+    lines.extend(
+        [
+            "",
+            "Interpretation",
+            "--------------",
             (
-                f"total_pairs={paired.get('total_pairs', 0)}, "
-                f"source_model_a_both={paired.get('source_model_a_both', 0)}, "
-                f"source_model_b_both={paired.get('source_model_b_both', 0)}, "
-                f"position_A_both={paired.get('position_A_both', 0)}, "
-                f"position_B_both={paired.get('position_B_both', 0)}, "
-                f"tie_both={paired.get('tie_both', 0)}, "
-                f"mixed={paired.get('mixed_or_partial_tie', 0)}, "
-                f"position_A_consistent_rate="
-                f"{percent(paired.get('position_A_consistent_rate'))}"
+                "position_A_both/position_B_both: same displayed position wins "
+                "after swapping, which is stronger position-bias evidence."
             ),
+            (
+                "source_model_a_both/source_model_b_both: same source model wins "
+                "after swapping, which is stronger source-model preference evidence."
+            ),
+            "mixed_or_partial_tie: cannot be cleanly attributed to position bias.",
         ]
     )
     return "\n".join(lines)

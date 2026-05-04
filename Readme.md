@@ -26,6 +26,7 @@
 - `08_analyze_length_bias_results.py`：统计 length-bias 结果，包括长/短回答胜率、A/B 位置和成对分析。
 - `09_prepare_position_bias_trials.py`：从两个原始 MT-Bench 模型回答生成独立 position-bias swapped A/B trials。
 - `10_analyze_position_bias_results.py`：分析 position-bias parsed judgments。
+- `11_run_position_bias_experiment.py`：串起独立 position-bias 的 prepare、judge、analyze 流程。
 - `99_run_length_bias_experiment.py`：串起 length-bias 后半段或 checked-all 严谨流程。
 
 正式 length-bias 流程是：
@@ -248,6 +249,17 @@ python 08_analyze_length_bias_results.py --deepseek 1 --gemini 0 --xiaomi 0
 
 position-bias 不使用 padded answer，而是比较两组原始模型回答的 A/B 位置互换。默认是 `gpt-4` vs `gpt-3.5-turbo`：
 
+推荐使用独立入口：
+
+```powershell
+python 11_run_position_bias_experiment.py --dry-run --question-limit 2
+python 11_run_position_bias_experiment.py
+```
+
+默认 judge 是 `deepseek-v4-flash`，也就是 `--deepseek 1 --gemini 0 --xiaomi 0`。`--dry-run` 只打印将执行的命令，不写文件，也不调用 API；真正运行到 judge 阶段时会调用 API，可能花钱。
+
+如果要调试底层步骤，可以手动运行：
+
 ```powershell
 python 09_prepare_position_bias_trials.py --dry-run --limit 2
 python 09_prepare_position_bias_trials.py
@@ -292,13 +304,14 @@ python 99_run_length_bias_experiment.py --dry-run --limit 1 --deepseek 1 --gemin
 最小检查可以这样跑：
 
 ```powershell
-python -m py_compile "length_bias_manipulation_judge.py" "03_prepare_manipulation_check_trials.py" "04_run_manipulation_check_judge.py" "05_filter_manipulation_check_results.py" "06_prepare_length_bias_trials.py" "07_run_length_bias_judge.py" "08_analyze_length_bias_results.py" "09_prepare_position_bias_trials.py" "10_analyze_position_bias_results.py" "99_run_length_bias_experiment.py"
+python -m py_compile "length_bias_manipulation_judge.py" "03_prepare_manipulation_check_trials.py" "04_run_manipulation_check_judge.py" "05_filter_manipulation_check_results.py" "06_prepare_length_bias_trials.py" "07_run_length_bias_judge.py" "08_analyze_length_bias_results.py" "09_prepare_position_bias_trials.py" "10_analyze_position_bias_results.py" "11_run_position_bias_experiment.py" "99_run_length_bias_experiment.py"
 python -m unittest test_bias_framework.py
 python 01_screen_length_bias_eligibility.py --dry-run
 python 03_prepare_manipulation_check_trials.py --dry-run --limit 2
 python 04_run_manipulation_check_judge.py --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
 python 06_prepare_length_bias_trials.py --dry-run
 python 09_prepare_position_bias_trials.py --dry-run --limit 2
+python 11_run_position_bias_experiment.py --dry-run --question-limit 2
 python 99_run_length_bias_experiment.py --stage checked-all --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
 ```
 
