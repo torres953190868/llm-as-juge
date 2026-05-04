@@ -3,13 +3,16 @@ import subprocess
 import sys
 
 
+CHECKED_PADDED = "mt_bench_questions_answers_padded_deepseek_checked.jsonl"
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description="Run the length-bias experiment pipeline."
     )
     parser.add_argument(
         "--stage",
-        choices=("all", "prepare", "judge", "analyze"),
+        choices=("all", "checked-all", "prepare", "judge", "analyze"),
         default="all",
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -46,7 +49,33 @@ def common_flags(args, include_overwrite=False):
 
 
 def prepare_command(args):
-    return command("03_prepare_length_bias_trials.py", common_flags(args))
+    return command("06_prepare_length_bias_trials.py", common_flags(args))
+
+
+def checked_prepare_command(args):
+    flags = common_flags(args)
+    flags.extend(["--input", CHECKED_PADDED])
+    return command("06_prepare_length_bias_trials.py", flags)
+
+
+def prepare_check_command(args):
+    return command("03_prepare_manipulation_check_trials.py", common_flags(args))
+
+
+def run_check_command(args):
+    flags = common_flags(args, include_overwrite=True)
+    flags.extend(["--judge-model", args.judge_model])
+    flags.extend(["--deepseek", str(args.deepseek)])
+    flags.extend(["--gemini", str(args.gemini)])
+    flags.extend(["--xiaomi", str(args.xiaomi)])
+    if args.judge_config:
+        flags.extend(["--judge-config", args.judge_config])
+    return command("04_run_manipulation_check_judge.py", flags)
+
+
+def filter_check_command(args):
+    flags = common_flags(args)
+    return command("05_filter_manipulation_check_results.py", flags)
 
 
 def judge_command(args):
@@ -57,7 +86,7 @@ def judge_command(args):
     flags.extend(["--xiaomi", str(args.xiaomi)])
     if args.judge_config:
         flags.extend(["--judge-config", args.judge_config])
-    return command("04_run_length_bias_judge.py", flags)
+    return command("07_run_length_bias_judge.py", flags)
 
 
 def analyze_command(args):
@@ -67,10 +96,27 @@ def analyze_command(args):
     flags.extend(["--deepseek", str(args.deepseek)])
     flags.extend(["--gemini", str(args.gemini)])
     flags.extend(["--xiaomi", str(args.xiaomi)])
-    return command("05_analyze_length_bias_results.py", flags)
+    return command("08_analyze_length_bias_results.py", flags)
 
 
 def run(args):
+    if args.stage == "checked-all":
+        cmds = [
+            prepare_check_command(args),
+            run_check_command(args),
+            filter_check_command(args),
+            checked_prepare_command(args),
+            judge_command(args),
+            analyze_command(args),
+        ]
+        if args.dry_run:
+            for cmd in cmds:
+                print("Would run: " + " ".join(cmd), flush=True)
+            return
+        for cmd in cmds:
+            run_command(cmd)
+        return
+
     if args.stage in ("all", "prepare"):
         run_command(prepare_command(args))
     if args.stage in ("all", "judge"):

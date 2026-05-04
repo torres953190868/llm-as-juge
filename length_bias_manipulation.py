@@ -1,5 +1,7 @@
+import json
+
 from length_bias_common import length_ratio, utc_now
-from length_bias_metadata import prompt_hash_metadata
+from length_bias_metadata import prompt_hash_metadata, text_sha256
 
 
 PROMPT_VERSION = "manipulation_check_v1"
@@ -99,16 +101,29 @@ def build_user_prompt(row):
     )
 
 
+def sample_sha256(row):
+    payload = {
+        "question_id": row.get("question_id"),
+        "original_answer": row.get("original_answer", ""),
+        "padded_answer": row.get("padded_answer", ""),
+    }
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return text_sha256(text)
+
+
 def make_manipulation_trial(row, input_sha256, metadata):
     validate_padded_row(row)
+    sample_hash = sample_sha256(row)
     user_prompt = build_user_prompt(row)
     generated_at = utc_now()
     prompt_hashes = prompt_hash_metadata(SYSTEM_PROMPT, user_prompt)
     return {
+        "trial_id": f"q{row['question_id']}_manipulation_{sample_hash[:12]}",
         "bias_type": "manipulation_check",
         "question_id": row["question_id"],
         "category": row["category"],
         "length_ratio": get_length_ratio(row),
+        "sample_sha256": sample_hash,
         "original_answer": row["original_answer"],
         "padded_answer": row["padded_answer"],
         "check_criteria": CHECK_CRITERIA,

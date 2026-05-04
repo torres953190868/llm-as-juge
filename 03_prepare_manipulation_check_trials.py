@@ -41,7 +41,7 @@ def run(args):
     metadata = run_metadata(
         input_path=args.input,
         extra={
-            "script": "07_prepare_manipulation_check_trials.py",
+            "script": "03_prepare_manipulation_check_trials.py",
             "output_path": args.output,
             "dry_run": args.dry_run,
             "limit": args.limit,

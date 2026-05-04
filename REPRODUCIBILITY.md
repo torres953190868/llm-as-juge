@@ -28,10 +28,11 @@ After changing scripts, run the smallest relevant check first:
 ```powershell
 python -m py_compile "length_bias_common.py" "length_bias_samples.py"
 python "01_screen_length_bias_eligibility.py" --dry-run
-python "03_prepare_length_bias_trials.py" --dry-run
-python "06_prepare_position_bias_trials.py" --dry-run --limit 2
-python "07_prepare_manipulation_check_trials.py" --dry-run --limit 2
-python "05_analyze_length_bias_results.py" --dry-run
+python "03_prepare_manipulation_check_trials.py" --dry-run --limit 2
+python "04_run_manipulation_check_judge.py" --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python "06_prepare_length_bias_trials.py" --dry-run
+python "09_prepare_position_bias_trials.py" --dry-run --limit 2
+python "08_analyze_length_bias_results.py" --dry-run
 ```
 
 The `FastChat/` directory is treated as an external data/source checkout. If it is
@@ -53,12 +54,14 @@ Length-bias and position-bias claims should remain separate. The length-bias
 pipeline includes swapped `long_A` / `long_B` trials as a control, but a final
 position-bias claim requires its own experiment and analysis plan.
 
-Final length-bias claims require a manipulation check: padded answers must be
-verified to preserve meaning while changing answer length. Dry-run commands do
-not call paid APIs; paid API usage starts only when padding or judging scripts
-are run without `--dry-run`.
+Final length-bias claims require a manipulation check before length-bias trial
+preparation: padded answers must be verified to preserve meaning while changing
+answer length. The strict pass policy is semantic equivalence with no new facts,
+structure improvement, or quality improvement. Dry-run commands do not call paid
+APIs; paid API usage starts only when padding or judging scripts are run without
+`--dry-run`.
 
 Position-bias trial preparation is separate from length-bias trial preparation.
-Use `06_prepare_position_bias_trials.py` to build original-answer swapped A/B
-trials and `08_analyze_position_bias_results.py` for parsed position-judgment
+Use `09_prepare_position_bias_trials.py` to build original-answer swapped A/B
+trials and `10_analyze_position_bias_results.py` for parsed position-judgment
 summaries.

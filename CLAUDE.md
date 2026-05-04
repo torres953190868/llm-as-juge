@@ -5,7 +5,7 @@
 - Project name: `llm-judge-bias`
 - Research focus: verify whether `LLM-as-a-judge` exhibits `position bias` and `length bias`
 - Current benchmark/data source: `FastChat` MT-Bench questions and model answers
-- Primary workflow: prepare question-answer pairs, construct controlled judge prompts, run bias evaluation, summarize results
+- Primary workflow: prepare question-answer pairs, run manipulation checks for padded answers, construct controlled judge prompts, run bias evaluation, summarize results
 
 ## Research Goal
 
@@ -84,6 +84,7 @@ When designing judge-bias experiments:
 - record the exact judge prompt template used for every run
 - record the evaluated judge model name and version
 - keep raw outputs and parsed results separate
+- run manipulation checks before length-bias trials so invalid padded answers do not enter judge evaluation
 
 For `position bias` studies:
 
@@ -122,14 +123,17 @@ Current dedicated scripts:
 
 - `01_screen_length_bias_eligibility.py`: screen MT-Bench samples for length-padding eligibility.
 - `02_pad_answers_deepseek.py`: generate padded answer variants with DeepSeek and reject outputs outside the configured length ratio.
-- `03_prepare_length_bias_trials.py`: validate padded rows and build pairwise `long_A` / `long_B` trial records.
-- `04_run_length_bias_judge.py`: run one or more OpenAI-compatible judge models and save raw plus parsed judgments.
-- `05_analyze_length_bias_results.py`: summarize parsed judgments by judge, prompt condition, category, and swapped `long_A` / `long_B` pairs.
+- `03_prepare_manipulation_check_trials.py`: build manipulation-check tasks for padded answers without calling judge APIs.
+- `04_run_manipulation_check_judge.py`: run one or more OpenAI-compatible judge models on manipulation-check tasks and save raw plus parsed JSON checks.
+- `05_filter_manipulation_check_results.py`: keep only padded rows that pass strict manipulation checks.
+- `length_bias_manipulation_judge.py`: helper module for manipulation-check payloads, JSON parsing, trial identifiers, and strict pass policy.
+- `06_prepare_length_bias_trials.py`: validate checked padded rows and build pairwise `long_A` / `long_B` trial records.
+- `07_run_length_bias_judge.py`: run one or more OpenAI-compatible judge models and save raw plus parsed judgments.
+- `08_analyze_length_bias_results.py`: summarize parsed judgments by judge, prompt condition, category, and swapped `long_A` / `long_B` pairs.
 - `length_bias_statistics.py`: helper module for question-cluster statistics, swapped-position paired statistics, deterministic bootstrap confidence intervals, data-shape interpretation, and sample coverage/attrition metadata.
-- `06_prepare_position_bias_trials.py`: build standalone position-bias swapped A/B trials from two original MT-Bench model-answer files; default pair is `gpt-4` vs `gpt-3.5-turbo`.
-- `07_prepare_manipulation_check_trials.py`: build manipulation-check tasks for padded answers without calling judge APIs.
-- `08_analyze_position_bias_results.py`: summarize parsed position-bias judgments by source-model preference and A/B position preference.
-- `99_run_length_bias_experiment.py`: orchestration entrypoint for prepare, judge, and analysis stages.
+- `09_prepare_position_bias_trials.py`: build standalone position-bias swapped A/B trials from two original MT-Bench model-answer files; default pair is `gpt-4` vs `gpt-3.5-turbo`.
+- `10_analyze_position_bias_results.py`: summarize parsed position-bias judgments by source-model preference and A/B position preference.
+- `99_run_length_bias_experiment.py`: orchestration entrypoint for legacy prepare/judge/analyze and checked-all stages.
 
 Default pilot constraints:
 
@@ -139,7 +143,8 @@ Default pilot constraints:
 - `1.3x` is a pilot run-through threshold, not a strong-manipulation threshold for final claims.
 - prompt conditions: `standard_anti_length` and `neutral_no_length`
 - position control: every included sample should produce both `long_A` and `long_B`
-- current legacy padded rows may lack structured answer turn fields; use `03_prepare_length_bias_trials.py --require-answer-turns` when strict turn-boundary validation is required.
+- current legacy padded rows may lack structured answer turn fields; use `06_prepare_length_bias_trials.py --require-answer-turns` when strict turn-boundary validation is required.
+- strict manipulation-check pass policy: `semantic_equivalence=true`, `new_facts=false`, `structure_improvement=false`, and `quality_improvement=false`.
 - current parsed pilot shape: `204 rows = 17 questions x 2 prompts x 2 positions x 3 judges`.
 - current pilot attrition: `80 -> 28 -> 17` from screened MT-Bench rows, to eligible rows, to analyzed questions with parsed judgments.
 - current pilot category coverage is limited after screening/padding and should not be described as full MT-Bench coverage.

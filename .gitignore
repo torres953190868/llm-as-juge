@@ -18,6 +18,7 @@ FastChat/
 # Generated experiment inputs, outputs, and probes
 mt_bench_questions_and_answers.txt
 mt_bench_questions_answers_padded_deepseek.jsonl
+mt_bench_questions_answers_padded_deepseek_checked.jsonl
 mt_bench_questions_answers_padded_deepseek.txt
 length_bias_trials.jsonl
 length_bias_screened_samples.jsonl
@@ -37,6 +38,9 @@ parsed_position_bias_judgments.jsonl
 position_bias_summary.json
 position_bias_summary.txt
 manipulation_check_trials.jsonl
+raw_manipulation_check_judgments.jsonl
+parsed_manipulation_check_judgments.jsonl
+manipulation_check_excluded_samples.jsonl
 
 # OS/editor noise
 .DS_Store
