@@ -10,6 +10,7 @@ DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+DEFAULT_USER_AGENT = "llm-judge-bias/1.0"
 
 
 def utc_now():
@@ -74,8 +75,12 @@ def load_env_file(path):
     return values
 
 
-def get_api_key(env_name, env_file):
+def get_env_value(env_name, env_file):
     return os.environ.get(env_name) or load_env_file(env_file).get(env_name)
+
+
+def get_api_key(env_name, env_file):
+    return get_env_value(env_name, env_file)
 
 
 def is_retryable_error(exc):
@@ -95,15 +100,17 @@ def error_details(exc):
     return detail
 
 
-def call_chat_completion(endpoint, payload, api_key, timeout=120):
+def call_json_endpoint(endpoint, payload, headers, timeout=120):
     body = json.dumps(payload).encode("utf-8")
+    request_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": DEFAULT_USER_AGENT,
+    }
+    request_headers.update(headers)
     req = urllib.request.Request(
         endpoint,
         data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=request_headers,
         method="POST",
     )
 
@@ -112,17 +119,36 @@ def call_chat_completion(endpoint, payload, api_key, timeout=120):
         return json.loads(response_body)
 
 
-def call_with_retries(endpoint, payload, api_key, attempts=3, timeout=120):
+def call_chat_completion(endpoint, payload, api_key, timeout=120):
+    return call_json_endpoint(
+        endpoint,
+        payload,
+        {"Authorization": f"Bearer {api_key}"},
+        timeout=timeout,
+    )
+
+
+def call_json_with_retries(endpoint, payload, headers, attempts=3, timeout=120):
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            return call_chat_completion(endpoint, payload, api_key, timeout=timeout)
+            return call_json_endpoint(endpoint, payload, headers, timeout=timeout)
         except Exception as exc:
             last_error = exc
             if attempt == attempts or not is_retryable_error(exc):
                 raise
             time.sleep(attempt * 2)
     raise last_error
+
+
+def call_with_retries(endpoint, payload, api_key, attempts=3, timeout=120):
+    return call_json_with_retries(
+        endpoint,
+        payload,
+        {"Authorization": f"Bearer {api_key}"},
+        attempts=attempts,
+        timeout=timeout,
+    )
 
 
 def extract_chat_content(response):

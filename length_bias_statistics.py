@@ -1,10 +1,8 @@
-import json
-import os
 import random
 from collections import defaultdict
 from itertools import combinations
 
-from length_bias_metadata import maybe_file_sha256
+from length_bias_coverage import build_sample_coverage
 
 
 DEFAULT_BOOTSTRAP_SEED = 20260504
@@ -153,6 +151,26 @@ def summarize_swapped_paired_scores(rows, seed, iterations):
     }
 
 
+def summarize_judge_prompt_scores(rows, seed, iterations):
+    by_group = defaultdict(list)
+    for row in rows:
+        key = (
+            row.get("judge_model", "unknown"),
+            row.get("prompt_condition", "unknown"),
+        )
+        by_group[key].append(row)
+
+    return {
+        f"{judge}::{prompt}": summarize_cluster_scores(
+            group_rows,
+            cluster_key=lambda row: row.get("question_id", "unknown"),
+            seed=seed,
+            iterations=iterations,
+        )
+        for (judge, prompt), group_rows in sorted(by_group.items())
+    }
+
+
 def summarize_data_shape(rows):
     questions = {row.get("question_id") for row in rows if row.get("question_id") is not None}
     prompts = {row.get("prompt_condition") for row in rows if row.get("prompt_condition")}
@@ -188,6 +206,9 @@ def build_statistical_summary(rows, seed=None, iterations=None):
         "swapped_paired": summarize_swapped_paired_scores(
             rows, seed=seed, iterations=iterations
         ),
+        "by_judge_prompt": summarize_judge_prompt_scores(
+            rows, seed=seed, iterations=iterations
+        ),
     }
 
 
@@ -217,6 +238,22 @@ def render_statistics_text(summary):
             f"seed={ci.get('seed')}"
         )
         lines.append(question_stats.get("score_definition", ""))
+    else:
+        lines.append("n/a")
+    lines.append("")
+    lines.append("By judge and prompt statistics")
+    lines.append("------------------------------")
+    by_judge_prompt = stats.get("by_judge_prompt", {})
+    if by_judge_prompt:
+        for key, group in by_judge_prompt.items():
+            ci = group.get("bootstrap_95_ci", {})
+            lines.append(
+                f"{key}: clusters={group.get('clusters')}, "
+                f"valid_observations={group.get('valid_observations')}, "
+                f"mean_net={percent(group.get('mean_net_length_preference'))}, "
+                f"bootstrap_95_ci=[{percent(ci.get('lower'))}, "
+                f"{percent(ci.get('upper'))}]"
+            )
     else:
         lines.append("n/a")
     lines.append("")
@@ -314,63 +351,3 @@ def compare_judge_results(rows, max_disagreements=20):
         "disagreements": disagreements,
     }
 
-
-def read_json_file(path):
-    if not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def count_jsonl(path):
-    if not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        return sum(1 for line in f if line.strip())
-
-
-def file_record(path):
-    return {
-        "path": path,
-        "exists": os.path.exists(path),
-        "row_count": count_jsonl(path) if path.endswith(".jsonl") else None,
-        "sha256": maybe_file_sha256(path),
-    }
-
-
-def build_sample_coverage(parsed_rows, screening_summary_path, screened_path, padded_path, trials_path):
-    screening_summary = read_json_file(screening_summary_path)
-    parsed_questions = {
-        row.get("question_id")
-        for row in parsed_rows
-        if row.get("question_id") is not None
-    }
-    trial_rows = count_jsonl(trials_path)
-    padded_rows = count_jsonl(padded_path)
-    screened_rows = count_jsonl(screened_path)
-
-    coverage = {
-        "files": {
-            "screening_summary": file_record(screening_summary_path),
-            "screened_samples": file_record(screened_path),
-            "padded_samples": file_record(padded_path),
-            "trials": file_record(trials_path),
-        },
-        "parsed_unique_questions": len(parsed_questions),
-        "parsed_rows": len(parsed_rows),
-        "trial_rows": trial_rows,
-        "padded_rows": padded_rows,
-        "screened_rows": screened_rows,
-    }
-    if screening_summary:
-        counts = screening_summary.get("counts_by_status", {})
-        coverage["screening_total_rows"] = screening_summary.get("total_rows")
-        coverage["screening_eligible_rows"] = counts.get("eligible")
-        coverage["screening_status_counts"] = counts
-        coverage["screening_category_counts"] = screening_summary.get("counts_by_category", {})
-    coverage["attrition_interpretation"] = (
-        f"{coverage.get('screening_total_rows', screened_rows)} screened rows -> "
-        f"{coverage.get('screening_eligible_rows', padded_rows)} eligible rows -> "
-        f"{len(parsed_questions)} analyzed questions."
-    )
-    return coverage

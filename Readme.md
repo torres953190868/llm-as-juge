@@ -25,9 +25,11 @@
 - `07_run_length_bias_judge.py`：调用 judge 模型，让它在 A/B 之间做选择。
 - `08_analyze_length_bias_results.py`：统计 length-bias 结果，包括长/短回答胜率、A/B 位置和成对分析。
 - `09_prepare_position_bias_trials.py`：从两个原始 MT-Bench 模型回答生成独立 position-bias swapped A/B trials。
-- `10_analyze_position_bias_results.py`：分析 position-bias parsed judgments。
-- `11_run_position_bias_experiment.py`：串起独立 position-bias 的 prepare、judge、analyze 流程。
-- `99_run_length_bias_experiment.py`：串起 length-bias 后半段或 checked-all 严谨流程。
+- `10_run_position_bias_judge.py`：调用 judge 模型，让它在 position-bias A/B 之间做选择。
+- `11_analyze_position_bias_results.py`：分析 position-bias parsed judgments。
+- `run_position_bias_experiment.py`：串起独立 position-bias 的 prepare、judge、analyze 流程。
+- `run_length_bias_experiment.py`：串起 length-bias 后半段或 checked-all 严谨流程。
+- `run_bias_judge.py`：orchestration 脚本共用的辅助模块。
 
 正式 length-bias 流程是：
 
@@ -84,16 +86,20 @@ Copy-Item .env.example .env
 
 ```text
 DEEPSEEK_API_KEY=你的key
-GEMINI_API_KEY=你的key
+DEEPSEEK_BASE_URL=可选，默认 https://api.deepseek.com
 XIAOMI_API_KEY=你的key
+XIAOMI_BASE_URL=可选，默认 https://token-plan-cn.xiaomimimo.com/v1
+GEMINI_API_KEY=你的key
 OPENAI_API_KEY=你的key
 ```
 
 `.env` 已经被 `.gitignore` 忽略，不会被上传。
 
+当前 manipulation-check judge 默认只用 DeepSeek 官方的 `deepseek-v4-pro`，通过 `DEEPSEEK_API_KEY` 调用，并发为 `--parallel 3`。正式 length-bias / position-bias judge 默认跑三个官方直连模型：Gemini `gemini-3-flash-preview`、DeepSeek 官方 `deepseek-v4-pro` 和小米官方 `mimo-v2-pro`。OpenCode Go 候选模型已经从内置默认列表停用。
+
 ## 推荐运行顺序
 
-下面是 length-bias 的严谨手动流程。`99_run_length_bias_experiment.py --stage checked-all` 可以串起 `03 -> 04 -> 05 -> 06 -> 07 -> 08`，但 `01` 和 `02` 仍然需要先单独运行。
+下面是 length-bias 的严谨手动流程。`run_length_bias_experiment.py --stage checked-all` 可以串起 `03 -> 04 -> 05 -> 06 -> 07 -> 08`，但 `01` 和 `02` 仍然需要先单独运行。
 
 ### 1. 先筛题
 
@@ -146,13 +152,13 @@ python 03_prepare_manipulation_check_trials.py
 先 dry-run：
 
 ```powershell
-python 04_run_manipulation_check_judge.py --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python 04_run_manipulation_check_judge.py --dry-run --limit 1
 ```
 
-真正运行时明确指定 judge：
+真正运行：
 
 ```powershell
-python 04_run_manipulation_check_judge.py --deepseek 1 --gemini 0 --xiaomi 0
+python 04_run_manipulation_check_judge.py
 ```
 
 这一步会生成：
@@ -208,14 +214,16 @@ python 06_prepare_length_bias_trials.py --input mt_bench_questions_answers_padde
 先 dry-run 看第一条 trial：
 
 ```powershell
-python 07_run_length_bias_judge.py --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python 07_run_length_bias_judge.py --dry-run --limit 1
 ```
 
 真正运行时明确指定 judge：
 
 ```powershell
-python 07_run_length_bias_judge.py --deepseek 1 --gemini 0 --xiaomi 0
+python 07_run_length_bias_judge.py
 ```
+
+`07` 的 `--parallel` 是每个 judge model 的并发数；默认 `--parallel 3` 表示每个模型最多 3 个请求同时在跑。
 
 或者用配置文件。注意：`--judge-config` 会替代内置 judge flags，请复制并修改自己的配置后再跑：
 
@@ -232,11 +240,11 @@ python 07_run_length_bias_judge.py --judge-config judge_config.example.json
 
 ### 8. 分析 length-bias 结果
 
-如果只跑 DeepSeek，分析时也带同样的 judge flags：
+分析时使用和 judge 阶段一致的 flags：
 
 ```powershell
-python 08_analyze_length_bias_results.py --dry-run --deepseek 1 --gemini 0 --xiaomi 0
-python 08_analyze_length_bias_results.py --deepseek 1 --gemini 0 --xiaomi 0
+python 08_analyze_length_bias_results.py --dry-run
+python 08_analyze_length_bias_results.py
 ```
 
 会生成：
@@ -252,11 +260,11 @@ position-bias 不使用 padded answer，而是比较两组原始模型回答的 
 推荐使用独立入口：
 
 ```powershell
-python 11_run_position_bias_experiment.py --dry-run --question-limit 2
-python 11_run_position_bias_experiment.py
+python run_position_bias_experiment.py --dry-run --question-limit 2
+python run_position_bias_experiment.py
 ```
 
-默认 judge 是 `deepseek-v4-flash`，也就是 `--deepseek 1 --gemini 0 --xiaomi 0`。`--dry-run` 只打印将执行的命令，不写文件，也不调用 API；真正运行到 judge 阶段时会调用 API，可能花钱。
+默认 judge 是 Gemini `gemini-3-flash-preview`、DeepSeek 官方 `deepseek-v4-pro` 加小米官方 `mimo-v2-pro`，也就是 `--gemini 1 --deepseek 1 --xiaomi 1 --opencode-go 0`。`--dry-run` 只打印将执行的命令，不写文件，也不调用 API；真正运行到 judge 阶段时会调用 API，可能花钱。
 
 如果要调试底层步骤，可以手动运行：
 
@@ -265,17 +273,18 @@ python 09_prepare_position_bias_trials.py --dry-run --limit 2
 python 09_prepare_position_bias_trials.py
 ```
 
-然后复用 length judge runner，但显式指定 position-bias 的输入和输出文件：
+然后用 position-bias 专用 judge runner：
 
 ```powershell
-python 07_run_length_bias_judge.py --trials position_bias_trials.jsonl --raw-output raw_position_bias_judgments.jsonl --parsed-output parsed_position_bias_judgments.jsonl --deepseek 1 --gemini 0 --xiaomi 0
+python 10_run_position_bias_judge.py --dry-run --limit 1
+python 10_run_position_bias_judge.py
 ```
 
 最后分析 position-bias 结果：
 
 ```powershell
-python 10_analyze_position_bias_results.py --dry-run
-python 10_analyze_position_bias_results.py
+python 11_analyze_position_bias_results.py --dry-run
+python 11_analyze_position_bias_results.py
 ```
 
 会生成：
@@ -283,12 +292,12 @@ python 10_analyze_position_bias_results.py
 - `position_bias_summary.json`
 - `position_bias_summary.txt`
 
-## 使用 99 入口
+## 使用 run_length_bias_experiment 入口
 
 如果已经有 `mt_bench_questions_answers_padded_deepseek.jsonl`，可以用 checked-all 串起严谨后半段：
 
 ```powershell
-python 99_run_length_bias_experiment.py --stage checked-all --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python run_length_bias_experiment.py --stage checked-all --dry-run --limit 1
 ```
 
 `checked-all --dry-run` 只打印将执行的命令，不写中间文件，也不调用 API。真正运行时去掉 `--dry-run`。
@@ -296,7 +305,7 @@ python 99_run_length_bias_experiment.py --stage checked-all --dry-run --limit 1 
 旧的默认入口仍然只串起 length-bias 的 `06_prepare -> 07_judge -> 08_analyze`：
 
 ```powershell
-python 99_run_length_bias_experiment.py --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python run_length_bias_experiment.py --dry-run --limit 1
 ```
 
 ## 每次改代码后怎么快速检查
@@ -304,15 +313,15 @@ python 99_run_length_bias_experiment.py --dry-run --limit 1 --deepseek 1 --gemin
 最小检查可以这样跑：
 
 ```powershell
-python -m py_compile "length_bias_manipulation_judge.py" "03_prepare_manipulation_check_trials.py" "04_run_manipulation_check_judge.py" "05_filter_manipulation_check_results.py" "06_prepare_length_bias_trials.py" "07_run_length_bias_judge.py" "08_analyze_length_bias_results.py" "09_prepare_position_bias_trials.py" "10_analyze_position_bias_results.py" "11_run_position_bias_experiment.py" "99_run_length_bias_experiment.py"
+python -m py_compile "length_bias_common.py" "length_bias_judge.py" "length_bias_judge_client.py" "length_bias_manipulation_judge.py" "03_prepare_manipulation_check_trials.py" "04_run_manipulation_check_judge.py" "05_filter_manipulation_check_results.py" "06_prepare_length_bias_trials.py" "07_run_length_bias_judge.py" "08_analyze_length_bias_results.py" "09_prepare_position_bias_trials.py" "10_run_position_bias_judge.py" "11_analyze_position_bias_results.py" "run_position_bias_experiment.py" "run_length_bias_experiment.py" "run_bias_judge.py"
 python -m unittest test_bias_framework.py
 python 01_screen_length_bias_eligibility.py --dry-run
 python 03_prepare_manipulation_check_trials.py --dry-run --limit 2
-python 04_run_manipulation_check_judge.py --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python 04_run_manipulation_check_judge.py --dry-run --limit 1
 python 06_prepare_length_bias_trials.py --dry-run
 python 09_prepare_position_bias_trials.py --dry-run --limit 2
-python 11_run_position_bias_experiment.py --dry-run --question-limit 2
-python 99_run_length_bias_experiment.py --stage checked-all --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python run_position_bias_experiment.py --dry-run --question-limit 2
+python run_length_bias_experiment.py --stage checked-all --dry-run --limit 1
 ```
 
 如果只是改 README，不需要跑完整实验。
@@ -350,9 +359,9 @@ python 99_run_length_bias_experiment.py --stage checked-all --dry-run --limit 1 
 
 The current length-bias results are pilot evidence, not final claims.
 
-- Current attrition is `80 -> 28 -> 17`: 80 screened MT-Bench rows, 28 eligible rows, and 17 questions with parsed judge results.
-- The current parsed result shape is `204 rows = 17 questions x 2 prompts x 2 positions x 3 judges`.
-- Category coverage is limited after screening and padding. Current analyzed questions cover only a subset of MT-Bench categories, mainly humanities, roleplay, and STEM.
+- Current attrition is `80 -> 28 -> 21`: 80 screened MT-Bench rows, 28 eligible rows, and 21 questions with parsed judge results.
+- The current parsed result shape is `252 rows = 21 questions x 2 prompts x 2 positions x 3 judges`.
+- Category coverage is limited after screening and padding. Current analyzed questions cover only a subset of MT-Bench categories: writing, roleplay, STEM, and humanities.
 - Position bias should be treated as a separate experiment from length bias. The length-bias pipeline swaps `long_A` / `long_B` for control, but final position-bias claims need their own dedicated design and analysis.
 - Final length-bias claims require manipulation check evidence that padded answers preserve meaning while changing length enough to test the intended mechanism.
 - Dry-run commands do not call paid APIs. Paid API usage starts when padding or judging scripts are run without `--dry-run`.

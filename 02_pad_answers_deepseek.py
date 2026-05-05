@@ -23,18 +23,18 @@ from length_bias_padding_metadata import (
 from length_bias_padding_prompt import build_payload
 from length_bias_padding_io import (
     append_padding_txt,
-    load_completed_ids,
+    load_compatible_completed_ids,
     truncate_outputs,
 )
 from length_bias_samples import join_turns, load_padding_samples
 
 
-DEFAULT_INPUT = "mt_bench_questions_and_answers.txt"
+DEFAULT_INPUT = "length_bias_eligible_samples.jsonl"
 DEFAULT_OUTPUT_JSONL = "mt_bench_questions_answers_padded_deepseek.jsonl"
 DEFAULT_OUTPUT_TXT = "mt_bench_questions_answers_padded_deepseek.txt"
 DEFAULT_RAW_OUTPUT = "raw_deepseek_padding_responses.jsonl"
 DEFAULT_FAILED_OUTPUT = "failed_deepseek_padding.jsonl"
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_ENV_FILE = ".env"
 API_KEY_ENV = DEEPSEEK_API_KEY_ENV
 PROMPT_VERSION = "deepseek_padding_v5_retry_direction"
@@ -114,6 +114,15 @@ def make_result_row(
             word_count(turn) for turn in padded_answer_turns
         ]
     return row
+
+
+def completed_ids_for_run(args, base_metadata):
+    if args.overwrite:
+        return set()
+    try:
+        return load_compatible_completed_ids(args.output_jsonl, base_metadata)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def length_failure_reason(row, min_ratio, max_ratio):
@@ -309,6 +318,8 @@ def run(args):
             print(f"First sample turns: question={q_turns}, answer={a_turns}")
         return
 
+    completed_ids = completed_ids_for_run(args, base_metadata)
+
     api_key = get_api_key(API_KEY_ENV, args.env_file)
     if not api_key:
         raise SystemExit(
@@ -320,7 +331,6 @@ def run(args):
             [args.output_jsonl, args.output_txt, args.raw_output, args.failed_output]
         )
 
-    completed_ids = set() if args.overwrite else load_completed_ids(args.output_jsonl)
     total = len(samples)
 
     pending = [

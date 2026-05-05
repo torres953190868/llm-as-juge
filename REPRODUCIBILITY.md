@@ -29,10 +29,10 @@ After changing scripts, run the smallest relevant check first:
 python -m py_compile "length_bias_common.py" "length_bias_samples.py"
 python "01_screen_length_bias_eligibility.py" --dry-run
 python "03_prepare_manipulation_check_trials.py" --dry-run --limit 2
-python "04_run_manipulation_check_judge.py" --dry-run --limit 1 --deepseek 1 --gemini 0 --xiaomi 0
+python "04_run_manipulation_check_judge.py" --dry-run --limit 1
 python "06_prepare_length_bias_trials.py" --dry-run
 python "09_prepare_position_bias_trials.py" --dry-run --limit 2
-python "11_run_position_bias_experiment.py" --dry-run --question-limit 2
+python "run_position_bias_experiment.py" --dry-run --question-limit 2
 python "08_analyze_length_bias_results.py" --dry-run
 ```
 
@@ -43,13 +43,13 @@ MT-Bench files.
 ## Current Pilot Scope
 
 The current length-bias dataset is a pilot run. The observed attrition is
-`80 -> 28 -> 17`: 80 screened MT-Bench rows, 28 eligible rows, and 17 questions
-with parsed judge results. The current parsed file has 204 rows, interpreted as
-`17 questions x 2 prompts x 2 positions x 3 judges`.
+`80 -> 28 -> 21`: 80 screened MT-Bench rows, 28 eligible rows, and 21 questions
+with parsed judge results. The current parsed file has 252 rows, interpreted as
+`21 questions x 2 prompts x 2 positions x 3 judges`.
 
 Category coverage is limited by the screening and padding stages. Current parsed
-coverage is concentrated in humanities, roleplay, and STEM, so the results should
-not be described as full MT-Bench coverage.
+coverage is concentrated in writing, roleplay, STEM, and humanities, so the
+results should not be described as full MT-Bench coverage.
 
 Length-bias and position-bias claims should remain separate. The length-bias
 pipeline includes swapped `long_A` / `long_B` trials as a control, but a final
@@ -62,10 +62,18 @@ structure improvement, or quality improvement. Dry-run commands do not call paid
 APIs; paid API usage starts only when padding or judging scripts are run without
 `--dry-run`.
 
+Manipulation-check judge calls now default to official DeepSeek
+`deepseek-v4-pro` with `DEEPSEEK_API_KEY`, using three concurrent requests.
+Length-bias and position-bias judge calls default to Gemini
+`gemini-3-flash-preview`, official DeepSeek `deepseek-v4-pro` with
+`DEEPSEEK_API_KEY`, plus official Xiaomi `mimo-v2-pro` with `XIAOMI_API_KEY`.
+OpenCode Go judge candidates are disabled in the built-in model list for
+current default runs.
+
 Position-bias trial preparation is separate from length-bias trial preparation.
-Use `11_run_position_bias_experiment.py` for the dedicated position-bias
+Use `run_position_bias_experiment.py` for the dedicated position-bias
 prepare/judge/analyze pipeline. It defaults to `gpt-4` vs `gpt-3.5-turbo` as
-the source-answer pair and `deepseek-v4-flash` as the only judge
-(`--deepseek 1 --gemini 0 --xiaomi 0`). The lower-level debugging path remains
-`09_prepare_position_bias_trials.py`, `07_run_length_bias_judge.py` with
-position-bias input/output paths, and `10_analyze_position_bias_results.py`.
+the source-answer pair and Gemini plus official DeepSeek plus official Xiaomi as
+judges (`--gemini 1 --deepseek 1 --xiaomi 1 --opencode-go 0`). The lower-level debugging path remains
+`09_prepare_position_bias_trials.py`, `10_run_position_bias_judge.py`, and
+`11_analyze_position_bias_results.py`.

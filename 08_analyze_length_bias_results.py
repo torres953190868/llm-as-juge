@@ -3,14 +3,20 @@ import json
 from collections import defaultdict
 
 from length_bias_common import read_jsonl
-from length_bias_judge import DEEPSEEK_MODEL, GEMINI_MODEL, XIAOMI_MODEL
+from length_bias_coverage import build_sample_coverage
 from length_bias_metadata import run_metadata
+from length_bias_model_selection import (
+    available_judge_models,
+    expanded_judge_models,
+    filter_rows_by_judge,
+    missing_judge_models,
+    selected_judge_models,
+)
 from length_bias_pairing import PAIR_PATTERNS, summarize_swapped_pairs
 from length_bias_plotting import render_academic_svg
 from length_bias_statistics import (
     DEFAULT_BOOTSTRAP_ITERATIONS,
     DEFAULT_BOOTSTRAP_SEED,
-    build_sample_coverage,
     build_statistical_summary,
     compare_judge_results,
     render_statistics_text,
@@ -37,6 +43,7 @@ def build_arg_parser():
     parser.add_argument("--output-image", default=DEFAULT_OUTPUT_IMAGE)
     parser.add_argument("--deepseek", type=int, choices=(0, 1), default=1)
     parser.add_argument("--gemini", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--opencode-go", type=int, choices=(0, 1), default=0)
     parser.add_argument("--xiaomi", type=int, choices=(0, 1), default=1)
     parser.add_argument("--bootstrap-seed", type=int, default=DEFAULT_BOOTSTRAP_SEED)
     parser.add_argument(
@@ -101,26 +108,6 @@ def safe_div(numerator, denominator):
     return numerator / denominator
 
 
-def selected_judge_models(args):
-    models = []
-    if args.deepseek:
-        models.append(DEEPSEEK_MODEL)
-    if args.gemini:
-        models.append(GEMINI_MODEL)
-    if args.xiaomi:
-        models.append(XIAOMI_MODEL)
-    return models
-
-
-def filter_rows_by_judge(rows, judge_models):
-    selected = set(judge_models)
-    return [
-        row for row in rows
-        if row.get("judge_model") in selected
-        and row.get("bias_type", "length") == "length"
-    ]
-
-
 def summarize_by_judge(rows):
     by_judge = defaultdict(empty_counts)
     for row in rows:
@@ -131,7 +118,13 @@ def summarize_by_judge(rows):
     }
 
 
-def summarize(rows, selected_models=None, source_row_count=None):
+def summarize(
+    rows,
+    selected_models=None,
+    source_row_count=None,
+    available_models=None,
+    missing_models=None,
+):
     by_judge_prompt = defaultdict(empty_counts)
     by_position = defaultdict(empty_counts)
     by_prompt_position = defaultdict(empty_counts)
@@ -168,7 +161,13 @@ def summarize(rows, selected_models=None, source_row_count=None):
     comparison = compare_judge_results(rows)
     swapped_pairs = summarize_swapped_pairs(rows)
     return {
+        "available_judge_models": available_models or [],
         "selected_judge_models": selected_models or [],
+        "expanded_selected_judge_models": expanded_judge_models(selected_models or []),
+        "missing_selected_judge_models": missing_models or [],
+        "filtered_judge_models": sorted({
+            row.get("judge_model", "unknown") for row in rows
+        }),
         "source_row_count": len(rows) if source_row_count is None else source_row_count,
         "filtered_row_count": len(rows),
         "overall": finalize_counts(overall),
@@ -215,6 +214,13 @@ def render_text(summary):
         "Selected judges: "
         + ", ".join(summary.get("selected_judge_models", []))
     )
+    lines.append(
+        "Available judges: "
+        + ", ".join(summary.get("available_judge_models", []))
+    )
+    missing = summary.get("missing_selected_judge_models", [])
+    if missing:
+        lines.append("Missing selected judges: " + ", ".join(missing))
     lines.append(
         f"Rows: filtered={summary.get('filtered_row_count', 0)}, "
         f"source={summary.get('source_row_count', 0)}"
@@ -308,14 +314,21 @@ def render_pair_line(label, counts):
 def run(args):
     judge_models = selected_judge_models(args)
     if not judge_models:
-        raise SystemExit("No judge models selected. Set at least one of --deepseek, --gemini, or --xiaomi to 1.")
+        raise SystemExit(
+            "No judge models selected. Set --gemini, --opencode-go, "
+            "--deepseek, or --xiaomi to 1."
+        )
 
     source_rows = read_jsonl(args.input)
+    available_models = available_judge_models(source_rows)
+    missing_models = missing_judge_models(judge_models, available_models)
     rows = filter_rows_by_judge(source_rows, judge_models)
     summary = summarize(
         rows,
         selected_models=judge_models,
         source_row_count=len(source_rows),
+        available_models=available_models,
+        missing_models=missing_models,
     )
     summary["statistical_analysis"] = build_statistical_summary(
         rows,

@@ -1,11 +1,12 @@
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from length_bias_common import DEEPSEEK_API_KEY_ENV, DEEPSEEK_ENDPOINT
-from length_bias_common import append_jsonl, call_with_retries, error_details
-from length_bias_common import extract_chat_content, get_api_key, read_jsonl
+from length_bias_common import append_jsonl, error_details
+from length_bias_common import get_api_key, read_jsonl
 from length_bias_common import truncate_file, utc_now, write_jsonl
-from length_bias_judge import DEEPSEEK_MODEL, load_judge_configs
+from length_bias_judge import DEEPSEEK_API_KEY_ENV, DEEPSEEK_MODEL
+from length_bias_judge import load_judge_configs, resolve_judge_configs
+from length_bias_judge_client import call_judge_model, extract_judge_content
 from length_bias_manipulation_judge import build_payload, normalize_trial
 from length_bias_manipulation_judge import parse_check_result, strict_passed
 from length_bias_metadata import maybe_file_sha256, prompt_hash_metadata
@@ -17,6 +18,8 @@ DEFAULT_RAW_OUTPUT = "raw_manipulation_check_judgments.jsonl"
 DEFAULT_PARSED_OUTPUT = "parsed_manipulation_check_judgments.jsonl"
 DEFAULT_MODEL = DEEPSEEK_MODEL
 DEFAULT_ENV_FILE = ".env"
+DEFAULT_PARALLEL = 3
+DEFAULT_PROGRESS_INTERVAL = 15
 
 
 def build_arg_parser():
@@ -28,15 +31,17 @@ def build_arg_parser():
     parser.add_argument("--parsed-output", default=DEFAULT_PARSED_OUTPUT)
     parser.add_argument("--judge-config", default=None)
     parser.add_argument("--judge-model", default=DEFAULT_MODEL)
-    parser.add_argument("--deepseek", type=int, choices=(0, 1), default=0)
-    parser.add_argument("--gemini", type=int, choices=(0, 1), default=1)
-    parser.add_argument("--xiaomi", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--deepseek", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--gemini", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--opencode-go", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--xiaomi", type=int, choices=(0, 1), default=0)
     parser.add_argument("--env-file", default=DEFAULT_ENV_FILE)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--parallel", type=int, default=3)
+    parser.add_argument("--parallel", type=int, default=DEFAULT_PARALLEL)
+    parser.add_argument("--progress-interval", type=int, default=DEFAULT_PROGRESS_INTERVAL)
     return parser
 
 
@@ -88,10 +93,12 @@ def judgment_metadata(config, payload, trials_path=None, trials_sha256=None):
         "stage": "run_manipulation_check_judge",
         "script": "04_run_manipulation_check_judge.py",
         "judge_config": sanitize_judge_config(config),
+        "provider": config.get("provider"),
+        "api_mode": config.get("api_mode"),
         "model": config.get("model", config["judge_model"]),
         "judge_model": config["judge_model"],
         "temperature": config.get("temperature", 0.0),
-        "endpoint": config.get("endpoint", DEEPSEEK_ENDPOINT),
+        "endpoint": config.get("endpoint"),
         "input_path": trials_path,
         "input_sha256": trials_sha256,
         "trials_path": trials_path,
@@ -171,10 +178,9 @@ def judge_trial(config, trial, index, total, api_key, trials_path, trials_sha256
         payload = build_payload(trial, config)
         metadata = judgment_metadata(config, payload, trials_path, trials_sha256)
         raw_row["run_metadata"] = metadata
-        endpoint = config.get("endpoint", DEEPSEEK_ENDPOINT)
-        response = call_with_retries(endpoint, payload, api_key)
+        response = call_judge_model(config, payload, api_key)
         raw_row["response"] = response
-        content = extract_chat_content(response)
+        content = extract_judge_content(config, response)
         parsed = parse_check_result(content)
         parse_status = "parsed"
         status = "completed"
@@ -213,10 +219,10 @@ def run(args):
     if args.limit is not None:
         trials = trials[: args.limit]
 
-    configs = load_judge_configs(args)
+    configs = resolve_judge_configs(load_judge_configs(args), args.env_file)
     if not configs:
         raise SystemExit(
-            "No judge models selected. Set at least one of --deepseek, --gemini, "
+            "No judge models selected. Set --gemini, --opencode-go, --deepseek, "
             "or --xiaomi to 1, or provide --judge-config."
         )
 
@@ -289,18 +295,25 @@ def run(args):
         for config, trial, index, total, api_key in tasks
     ]
     print(f"Submitted {len(futures)} request(s)")
-    handled = set()
+    pending = set(futures)
     interrupted = False
     try:
-        for future in as_completed(futures):
-            log_result(future.result(), stats_by_judge, args)
-            handled.add(future)
+        while pending:
+            finished, pending = wait(
+                pending,
+                timeout=args.progress_interval,
+                return_when=FIRST_COMPLETED,
+            )
+            if not finished:
+                inflight = len(pending)
+                print(f"Waiting for {inflight} request(s) still in flight...")
+                continue
+            for future in finished:
+                log_result(future.result(), stats_by_judge, args)
     except KeyboardInterrupt:
         interrupted = True
         print("Interrupted. Saving finished requests and cancelling pending work...")
-        for future in futures:
-            if future in handled:
-                continue
+        for future in list(pending):
             if future.done() and not future.cancelled():
                 try:
                     log_result(future.result(), stats_by_judge, args)

@@ -132,27 +132,34 @@ Current dedicated scripts:
 - `08_analyze_length_bias_results.py`: summarize parsed judgments by judge, prompt condition, category, and swapped `long_A` / `long_B` pairs.
 - `length_bias_statistics.py`: helper module for question-cluster statistics, swapped-position paired statistics, deterministic bootstrap confidence intervals, data-shape interpretation, and sample coverage/attrition metadata.
 - `09_prepare_position_bias_trials.py`: build standalone position-bias swapped A/B trials from two original MT-Bench model-answer files; default pair is `gpt-4` vs `gpt-3.5-turbo`.
-- `10_analyze_position_bias_results.py`: summarize parsed position-bias judgments by source-model preference and A/B position preference.
-- `11_run_position_bias_experiment.py`: orchestration entrypoint for standalone position-bias prepare, judge, and analyze stages.
-- `99_run_length_bias_experiment.py`: orchestration entrypoint for legacy prepare/judge/analyze and checked-all stages.
+- `10_run_position_bias_judge.py`: run one or more OpenAI-compatible judge models on position-bias trials and save raw plus parsed judgments.
+- `11_analyze_position_bias_results.py`: summarize parsed position-bias judgments by source-model preference and A/B position preference.
+- `run_position_bias_experiment.py`: orchestration entrypoint for standalone position-bias prepare, judge, and analyze stages.
+- `run_length_bias_experiment.py`: orchestration entrypoint for legacy prepare/judge/analyze and checked-all stages.
+- `run_bias_judge.py`: shared helpers for bias-experiment orchestration scripts.
 
 Default pilot constraints:
 
 - pilot length ratio target: `1.3 <= padded_word_count / original_word_count <= 2.0`
-- current padding model default: DeepSeek `deepseek-v4-flash` via `DEEPSEEK_API_KEY`
+- current padding model default: DeepSeek `deepseek-v4-pro` via `DEEPSEEK_API_KEY`
 - padding generation default concurrency: `--parallel 3`
+- current manipulation-check judge default: official DeepSeek `deepseek-v4-pro` via `DEEPSEEK_API_KEY`, with `--parallel 3`
+- current length-bias judge concurrency: `07_run_length_bias_judge.py --parallel N` means up to `N` concurrent requests per judge model, not total global concurrency.
 - `1.3x` is a pilot run-through threshold, not a strong-manipulation threshold for final claims.
 - prompt conditions: `standard_anti_length` and `neutral_no_length`
 - position control: every included sample should produce both `long_A` and `long_B`
 - current legacy padded rows may lack structured answer turn fields; use `06_prepare_length_bias_trials.py --require-answer-turns` when strict turn-boundary validation is required.
 - strict manipulation-check pass policy: `semantic_equivalence=true`, `new_facts=false`, `structure_improvement=false`, and `quality_improvement=false`.
-- current parsed pilot shape: `204 rows = 17 questions x 2 prompts x 2 positions x 3 judges`.
-- current pilot attrition: `80 -> 28 -> 17` from screened MT-Bench rows, to eligible rows, to analyzed questions with parsed judgments.
+- current length-bias and position-bias judge default suite: Gemini `gemini-3-flash-preview` directly, official DeepSeek `deepseek-v4-pro` via `DEEPSEEK_API_KEY`, plus official Xiaomi `mimo-v2-pro` via `XIAOMI_API_KEY`.
+- OpenCode Go judge candidates are disabled in the built-in model list and should not be used for the current default runs.
+- current parsed pilot shape: `252 rows = 21 questions x 2 prompts x 2 positions x 3 judges`.
+- current pilot attrition: `80 -> 28 -> 21` from screened MT-Bench rows, to eligible rows, to analyzed questions with parsed judgments.
 - current pilot category coverage is limited after screening/padding and should not be described as full MT-Bench coverage.
 - length-bias and position-bias claims should remain separate; swapped `long_A` / `long_B` controls are not a full standalone position-bias experiment.
 - standalone position-bias default source pair: `gpt-4` vs `gpt-3.5-turbo`.
-- standalone position-bias default judge setting: DeepSeek `deepseek-v4-flash` only (`--deepseek 1 --gemini 0 --xiaomi 0`).
-- use `11_run_position_bias_experiment.py` for the dedicated position-bias prepare/judge/analyze pipeline.
+- standalone position-bias default judge setting: Gemini plus official DeepSeek plus official Xiaomi (`--gemini 1 --deepseek 1 --xiaomi 1 --opencode-go 0`).
+- standalone position-bias prepare now excludes MT-Bench question IDs `105`, `107`, `128`, and `136` by default because DeepSeek/Xiaomi repeatedly returned empty judge content for these prompts; use `09_prepare_position_bias_trials.py --include-known-empty-response-questions` only when intentionally rerunning those problematic cases.
+- use `run_position_bias_experiment.py` for the dedicated position-bias prepare/judge/analyze pipeline.
 - final claims require a manipulation check that padded answers preserve meaning while changing answer length.
 - dry-run commands should not call paid APIs; paid API usage starts when padding or judging scripts run without `--dry-run`.
 

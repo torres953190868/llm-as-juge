@@ -1,13 +1,14 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from length_bias_common import DEEPSEEK_API_KEY_ENV, DEEPSEEK_ENDPOINT
-from length_bias_common import append_jsonl, call_with_retries, error_details
-from length_bias_common import extract_chat_content, get_api_key, read_jsonl
+from length_bias_common import append_jsonl, error_details
+from length_bias_common import get_api_key, read_jsonl
 from length_bias_common import truncate_file, utc_now, write_jsonl
-from length_bias_judge import DEEPSEEK_MODEL, build_payload, build_user_prompt
-from length_bias_judge import load_judge_configs
+from length_bias_judge import DEEPSEEK_API_KEY_ENV, DEEPSEEK_MODEL
+from length_bias_judge import build_payload, build_user_prompt
+from length_bias_judge import load_judge_configs, resolve_judge_configs
 from length_bias_judge import long_answer_won, parse_winner
+from length_bias_judge_client import call_judge_model, extract_judge_content
 from length_bias_metadata import maybe_file_sha256, prompt_hash_metadata
 from length_bias_metadata import sanitize_judge_config
 
@@ -28,8 +29,9 @@ def build_arg_parser():
     parser.add_argument("--parsed-output", default=DEFAULT_PARSED_OUTPUT)
     parser.add_argument("--judge-config", default=None)
     parser.add_argument("--judge-model", default=DEFAULT_MODEL)
-    parser.add_argument("--deepseek", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--deepseek", type=int, choices=(0, 1), default=1)
     parser.add_argument("--gemini", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--opencode-go", type=int, choices=(0, 1), default=0)
     parser.add_argument("--xiaomi", type=int, choices=(0, 1), default=1)
     parser.add_argument("--env-file", default=DEFAULT_ENV_FILE)
     parser.add_argument("--limit", type=int, default=None)
@@ -86,10 +88,12 @@ def judgment_metadata(config, payload, trials_path=None, trials_sha256=None):
         "generated_at": generated_at,
         "created_at": generated_at,
         "judge_config": sanitize_judge_config(config),
+        "provider": config.get("provider"),
+        "api_mode": config.get("api_mode"),
         "model": config.get("model", config["judge_model"]),
         "judge_model": config["judge_model"],
         "temperature": config.get("temperature", 0.0),
-        "endpoint": config.get("endpoint", DEEPSEEK_ENDPOINT),
+        "endpoint": config.get("endpoint"),
         "input_path": trials_path,
         "input_sha256": trials_sha256,
         "trials_path": trials_path,
@@ -189,9 +193,8 @@ def judge_trial(config, trial, index, total, api_key, trials_path, trials_sha256
         payload = build_payload(trial, config)
         metadata = judgment_metadata(config, payload, trials_path, trials_sha256)
         raw_row["run_metadata"] = metadata
-        endpoint = config.get("endpoint", DEEPSEEK_ENDPOINT)
-        response = call_with_retries(endpoint, payload, api_key)
-        content = extract_chat_content(response)
+        response = call_judge_model(config, payload, api_key)
+        content = extract_judge_content(config, response)
         winner = parse_winner(content)
         raw_row["response"] = response
         status = "completed"
@@ -224,17 +227,18 @@ def run(args):
     if args.limit is not None:
         trials = trials[: args.limit]
 
-    configs = load_judge_configs(args)
+    configs = resolve_judge_configs(load_judge_configs(args), args.env_file)
     if not configs:
         raise SystemExit(
-            "No judge models selected. Set at least one of --deepseek, --gemini, "
+            "No judge models selected. Set --gemini, --opencode-go, --deepseek, "
             "or --xiaomi to 1, or provide --judge-config."
         )
 
     judge_names = [config["judge_model"] for config in configs]
+    max_total_parallel = args.parallel * len(configs)
     print(
         f"Judging {len(trials)} trial(s) with: {', '.join(judge_names)} "
-        f"(parallel={args.parallel})"
+        f"(parallel={args.parallel} per judge, max_total={max_total_parallel})"
     )
 
     if not trials:
@@ -260,7 +264,7 @@ def run(args):
         for config in configs
     }
     trials_sha256 = maybe_file_sha256(args.trials)
-    tasks = []
+    tasks_by_judge = {config["judge_model"]: [] for config in configs}
     retry_keys = set()
     for config in configs:
         judge_model = config["judge_model"]
@@ -274,27 +278,43 @@ def run(args):
                     print(f"[{index}/{len(trials)}] Skipping {trial['trial_id']} {judge_model}")
                 continue
             retry_keys.add(key)
-            tasks.append((config, trial, index, len(trials), api_key))
+            tasks_by_judge[judge_model].append(
+                (config, trial, index, len(trials), api_key)
+            )
 
     removed = remove_invalid_parsed_rows(args.parsed_output, retry_keys)
     if removed:
         print(f"Removed {removed} previous invalid parsed row(s) before retrying")
 
-    executor = ThreadPoolExecutor(max_workers=args.parallel)
-    futures = [
-        executor.submit(
-            judge_trial,
-            config,
-            trial,
-            index,
-            total,
-            api_key,
-            args.trials,
-            trials_sha256,
+    executors = []
+    futures = []
+    for judge_model, judge_tasks in tasks_by_judge.items():
+        if not judge_tasks:
+            continue
+        executor = ThreadPoolExecutor(
+            max_workers=args.parallel,
+            thread_name_prefix=f"judge-{judge_model}",
         )
-        for config, trial, index, total, api_key in tasks
-    ]
-    print(f"Submitted {len(futures)} request(s)")
+        executors.append(executor)
+        for config, trial, index, total, api_key in judge_tasks:
+            futures.append(
+                executor.submit(
+                    judge_trial,
+                    config,
+                    trial,
+                    index,
+                    total,
+                    api_key,
+                    args.trials,
+                    trials_sha256,
+                )
+            )
+    active_judges = sum(1 for judge_tasks in tasks_by_judge.values() if judge_tasks)
+    print(
+        f"Submitted {len(futures)} request(s) "
+        f"(parallel={args.parallel} per judge, "
+        f"max_total={args.parallel * active_judges})"
+    )
     handled = set()
     interrupted = False
     try:
@@ -315,7 +335,8 @@ def run(args):
             else:
                 future.cancel()
     finally:
-        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
+        for executor in executors:
+            executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     total_stats = {"completed": 0, "skipped": 0, "failed": 0}
     for judge_model, stats in stats_by_judge.items():

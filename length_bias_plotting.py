@@ -1,99 +1,333 @@
 from xml.sax.saxutils import escape
 
+from length_bias_pairing import PAIR_PATTERNS
+
 
 MODEL_LABELS = {
-    "deepseek-v4-flash": "DeepSeek",
+    "deepseek-v4-flash": "DeepSeek V4 Flash",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
     "gemini-3-flash-preview": "Gemini Flash",
-    "mimo-v2-pro": "MiMo Pro",
+    "glm-5.1": "GLM-5.1",
+    "kimi-k2.6": "Kimi K2.6",
+    "minimax-m2.7": "MiniMax M2.7",
+    "mimo-v2-pro": "MiMo V2 Pro",
+    "qwen3.6-plus": "Qwen3.6 Plus",
+}
+
+PROMPT_LABELS = {
+    "neutral_no_length": "Neutral",
+    "standard_anti_length": "Length-control",
+}
+
+OUTCOME_COLORS = {
+    "long_wins": "#0072B2",
+    "short_wins": "#D55E00",
+    "ties": "#666666",
+    "invalid": "#BDBDBD",
+}
+
+PAIR_COLORS = {
+    "long_both_positions": "#332288",
+    "short_both_positions": "#AA4499",
+    "position_A_both": "#E69F00",
+    "position_B_both": "#009E73",
+    "tie_both": "#777777",
+    "mixed_or_partial_tie": "#CC6677",
+    "invalid_pair": "#BBBBBB",
+    "missing_pair": "#88CCEE",
+}
+
+PAIR_LABELS = {
+    "long_both_positions": "Long both",
+    "short_both_positions": "Short both",
+    "position_A_both": "A both",
+    "position_B_both": "B both",
+    "tie_both": "Tie both",
+    "mixed_or_partial_tie": "Mixed",
+    "invalid_pair": "Invalid",
+    "missing_pair": "Missing",
 }
 
 
 def render_academic_svg(summary):
-    judges = summary.get("selected_judge_models") or list(summary["by_judge"])
-    by_judge = summary["by_judge"]
-    paired_by_judge = summary.get("swapped_pair_analysis", {}).get("by_judge", {})
-    count_keys = [
-        ("long_wins", "#4c78a8"),
-        ("short_wins", "#b55d60"),
-        ("ties", "#6b6b6b"),
-        ("invalid", "#b0b0b0"),
-    ]
-    max_count = max(
-        [by_judge.get(judge, {}).get(key, 0) for judge in judges for key, _ in count_keys]
-        or [1]
+    groups = judge_prompt_groups(summary)
+    judges = actual_judges(summary)
+    shape = summary.get("statistical_analysis", {}).get("data_shape", {})
+    bootstrap = (
+        summary.get("statistical_analysis", {})
+        .get("question_cluster", {})
+        .get("bootstrap_95_ci", {})
     )
-    paired_keys = [
-        ("long_both_positions", "#4c78a8"),
-        ("position_A_both", "#d08b39"),
-        ("tie_both", "#6b6b6b"),
-        ("mixed_or_partial_tie", "#7f6bb2"),
-    ]
-    max_pair_count = max(
-        [
-            paired_by_judge.get(judge, {}).get(key, 0)
-            for judge in judges
-            for key, _ in paired_keys
-        ]
-        or [1]
+    subtitle = (
+        f"{shape.get('questions', 0)} questions, "
+        f"{summary.get('filtered_row_count', 0)} parsed judgments; "
+        f"95% CI from question-cluster bootstrap "
+        f"(seed={bootstrap.get('seed')}, iterations={bootstrap.get('iterations')})."
     )
+
     parts = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="860" viewBox="0 0 1120 860">',
-        '<rect width="1120" height="860" fill="#ffffff"/>',
-        svg_text(56, 44, "Length-bias outcomes by LLM judge", 24, "#111111", "700"),
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1020" viewBox="0 0 1240 1020">',
+        '<rect width="1240" height="1020" fill="#ffffff"/>',
+        svg_text(56, 44, "Length-bias effects by judge and prompt", 24, "#111111", "700"),
+        svg_text(56, 70, subtitle, 14, "#444444"),
+    ]
+    parts.extend(render_effect_panel(70, 120, 1100, 300, groups))
+    parts.extend(render_outcome_panel(70, 465, 1100, 240, groups))
+    parts.extend(render_pair_panel(70, 755, 1100, 190, judges, summary))
+    parts.extend(render_pair_legend(70, 965))
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def render_effect_panel(x, y, width, height, groups):
+    label_width = 220
+    plot_left = x + label_width
+    plot_top = y + 48
+    plot_width = width - label_width - 170
+    row_step = 34
+    axis_y = plot_top + row_step * max(len(groups), 1) + 10
+    parts = [
+        svg_text(x, y, "A. Net length preference with 95% CI", 17, "#111111", "700"),
         svg_text(
-            56,
-            70,
-            "Filtered parsed judgments; top panels report trials, bottom panel reports swapped long_A/long_B pairs.",
-            14,
+            x,
+            y + 22,
+            "Score: long win=1, short win=-1, tie=0; zero means no length preference.",
+            13,
             "#444444",
         ),
     ]
-    parts.extend(
-        render_panel(
-            70,
-            120,
-            470,
-            300,
-            "A. Outcome counts",
-            "Count",
-            judges,
-            count_values(judges, by_judge),
-            max(max_count, 1),
-            False,
+    add_percent_axis(parts, plot_left, axis_y, plot_width, y + 42, axis_y, True)
+    for index, group in enumerate(groups):
+        row_y = plot_top + index * row_step
+        stats = group.get("stats", {})
+        ci = stats.get("bootstrap_95_ci", {})
+        mean = stats.get("mean_net_length_preference")
+        lower = ci.get("lower")
+        upper = ci.get("upper")
+        parts.append(svg_text(x, row_y + 4, group["label"], 12, "#111111"))
+        if mean is None:
+            parts.append(svg_text(plot_left, row_y + 4, "n/a", 12, "#666666"))
+            continue
+        mean_x = percent_x(plot_left, plot_width, mean)
+        lower_x = percent_x(plot_left, plot_width, lower if lower is not None else mean)
+        upper_x = percent_x(plot_left, plot_width, upper if upper is not None else mean)
+        parts.append(
+            f'<line x1="{lower_x:.1f}" y1="{row_y:.1f}" x2="{upper_x:.1f}" y2="{row_y:.1f}" '
+            'stroke="#111111" stroke-width="1.5"/>'
         )
-    )
-    parts.extend(
-        render_panel(
-            620,
-            120,
-            410,
-            300,
-            "B. Length-bias rates",
-            "Percent",
-            judges,
-            rate_values(judges, by_judge),
-            100,
-            True,
+        parts.append(
+            f'<line x1="{lower_x:.1f}" y1="{row_y - 5:.1f}" x2="{lower_x:.1f}" y2="{row_y + 5:.1f}" '
+            'stroke="#111111" stroke-width="1.2"/>'
         )
-    )
-    parts.extend(render_outcome_legend(70, 460))
-    parts.extend(
-        render_panel(
-            70,
-            535,
-            960,
-            250,
-            "C. Swapped pair patterns",
-            "Pair count",
-            judges,
-            paired_pattern_values(judges, paired_by_judge),
-            max(max_pair_count, 1),
-            False,
+        parts.append(
+            f'<line x1="{upper_x:.1f}" y1="{row_y - 5:.1f}" x2="{upper_x:.1f}" y2="{row_y + 5:.1f}" '
+            'stroke="#111111" stroke-width="1.2"/>'
         )
+        parts.append(
+            f'<circle cx="{mean_x:.1f}" cy="{row_y:.1f}" r="4.8" fill="#0072B2" stroke="#111111" stroke-width="0.7"/>'
+        )
+        parts.append(
+            svg_text(
+                plot_left + plot_width + 18,
+                row_y + 4,
+                f"{pct(mean)} [{pct(lower)}, {pct(upper)}]",
+                12,
+                "#111111",
+            )
+        )
+    parts.append(svg_text(plot_left + plot_width / 2, axis_y + 34, "Net length preference", 13, "#111111", "400", "middle"))
+    return parts
+
+
+def render_outcome_panel(x, y, width, height, groups):
+    label_width = 220
+    bar_left = x + label_width
+    bar_width = width - label_width - 210
+    row_step = 27
+    bar_height = 14
+    top = y + 70
+    parts = [
+        svg_text(x, y, "B. Outcome composition", 17, "#111111", "700"),
+        svg_text(x, y + 22, "Bars sum to 100% within each judge and prompt group.", 13, "#444444"),
+    ]
+    add_outcome_legend(parts, bar_left, y + 34)
+    for index, group in enumerate(groups):
+        row_y = top + index * row_step
+        counts = group.get("counts", {})
+        total = counts.get("total", 0)
+        parts.append(svg_text(x, row_y + 11, group["label"], 12, "#111111"))
+        cursor = bar_left
+        for key in ("long_wins", "short_wins", "ties", "invalid"):
+            value = counts.get(key, 0)
+            segment_width = 0 if total == 0 else bar_width * value / total
+            if segment_width:
+                parts.append(
+                    f'<rect x="{cursor:.1f}" y="{row_y:.1f}" width="{segment_width:.1f}" '
+                    f'height="{bar_height}" fill="{OUTCOME_COLORS[key]}"/>'
+                )
+            cursor += segment_width
+        parts.append(
+            f'<rect x="{bar_left:.1f}" y="{row_y:.1f}" width="{bar_width:.1f}" '
+            f'height="{bar_height}" fill="none" stroke="#111111" stroke-width="0.6"/>'
+        )
+        parts.append(svg_text(bar_left + bar_width + 14, row_y + 11, f"n={total}", 12, "#111111"))
+    add_percent_scale(parts, bar_left, top + row_step * len(groups) + 8, bar_width)
+    return parts
+
+
+def render_pair_panel(x, y, width, height, judges, summary):
+    label_width = 160
+    bar_left = x + label_width
+    bar_width = width - label_width - 120
+    row_step = 31
+    bar_height = 15
+    top = y + 42
+    paired_by_judge = summary.get("swapped_pair_analysis", {}).get("by_judge", {})
+    max_total = max(
+        [paired_by_judge.get(judge, {}).get("total_pairs", 0) for judge in judges] or [1]
     )
-    parts.extend(render_pair_legend(70, 812))
-    parts.append("</svg>")
-    return "\n".join(parts)
+    axis_max = nice_count(max_total)
+    parts = [
+        svg_text(x, y, "C. Swapped long_A / long_B pair patterns", 17, "#111111", "700"),
+        svg_text(x, y + 22, "Counts are complete swapped pairs per judge.", 13, "#444444"),
+    ]
+    for index, judge in enumerate(judges):
+        row_y = top + index * row_step
+        counts = paired_by_judge.get(judge, {})
+        total = counts.get("total_pairs", 0)
+        cursor = bar_left
+        parts.append(svg_text(x, row_y + 12, model_label(judge), 12, "#111111"))
+        for key in PAIR_PATTERNS:
+            value = counts.get(key, 0)
+            segment_width = 0 if axis_max == 0 else bar_width * value / axis_max
+            if segment_width:
+                parts.append(
+                    f'<rect x="{cursor:.1f}" y="{row_y:.1f}" width="{segment_width:.1f}" '
+                    f'height="{bar_height}" fill="{PAIR_COLORS[key]}"/>'
+                )
+            cursor += segment_width
+        parts.append(
+            f'<rect x="{bar_left:.1f}" y="{row_y:.1f}" width="{bar_width:.1f}" '
+            f'height="{bar_height}" fill="none" stroke="#111111" stroke-width="0.6"/>'
+        )
+        parts.append(svg_text(bar_left + bar_width + 14, row_y + 12, f"{total} pairs", 12, "#111111"))
+    add_count_axis(parts, bar_left, top + row_step * len(judges) + 8, bar_width, axis_max)
+    return parts
+
+
+def add_percent_axis(parts, left, axis_y, width, grid_top, grid_bottom, include_negative):
+    ticks = (-1.0, -0.5, 0.0, 0.5, 1.0) if include_negative else (0.0, 0.5, 1.0)
+    for tick in ticks:
+        x = percent_x(left, width, tick)
+        stroke = "#999999" if tick == 0 else "#DDDDDD"
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{grid_top:.1f}" x2="{x:.1f}" y2="{grid_bottom:.1f}" '
+            f'stroke="{stroke}" stroke-width="1"/>'
+        )
+        parts.append(svg_text(x, axis_y + 18, pct(tick), 11, "#111111", "400", "middle"))
+    parts.append(f'<line x1="{left:.1f}" y1="{axis_y:.1f}" x2="{left + width:.1f}" y2="{axis_y:.1f}" stroke="#111111"/>')
+
+
+def add_percent_scale(parts, left, y, width):
+    for tick in (0.0, 0.5, 1.0):
+        x = left + width * tick
+        parts.append(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x:.1f}" y2="{y + 5:.1f}" stroke="#111111"/>')
+        parts.append(svg_text(x, y + 18, pct(tick), 11, "#111111", "400", "middle"))
+    parts.append(f'<line x1="{left:.1f}" y1="{y:.1f}" x2="{left + width:.1f}" y2="{y:.1f}" stroke="#111111"/>')
+
+
+def add_count_axis(parts, left, y, width, axis_max):
+    step = 10 if axis_max > 20 else 5
+    for tick in range(0, axis_max + 1, step):
+        x = left + width * tick / axis_max
+        parts.append(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x:.1f}" y2="{y + 5:.1f}" stroke="#111111"/>')
+        parts.append(svg_text(x, y + 18, str(tick), 11, "#111111", "400", "middle"))
+    parts.append(f'<line x1="{left:.1f}" y1="{y:.1f}" x2="{left + width:.1f}" y2="{y:.1f}" stroke="#111111"/>')
+
+
+def add_outcome_legend(parts, x, y):
+    items = (
+        ("Long", OUTCOME_COLORS["long_wins"]),
+        ("Short", OUTCOME_COLORS["short_wins"]),
+        ("Tie", OUTCOME_COLORS["ties"]),
+        ("Invalid", OUTCOME_COLORS["invalid"]),
+    )
+    for index, (label, color) in enumerate(items):
+        lx = x + index * 95
+        parts.append(f'<rect x="{lx}" y="{y + 5}" width="12" height="12" fill="{color}"/>')
+        parts.append(svg_text(lx + 18, y + 16, label, 12, "#111111"))
+
+
+def render_pair_legend(x, y):
+    parts = [svg_text(x, y - 8, "Swapped-pair legend", 13, "#111111", "700")]
+    for index, key in enumerate(PAIR_PATTERNS):
+        lx = x + (index % 4) * 250
+        ly = y + (index // 4) * 22
+        parts.append(f'<rect x="{lx}" y="{ly}" width="12" height="12" fill="{PAIR_COLORS[key]}"/>')
+        parts.append(svg_text(lx + 18, ly + 11, PAIR_LABELS[key], 12, "#111111"))
+    return parts
+
+
+def judge_prompt_groups(summary):
+    stats_by_group = summary.get("statistical_analysis", {}).get("by_judge_prompt", {})
+    counts_by_group = summary.get("by_judge_prompt", {})
+    judges = actual_judges(summary)
+    prompts = prompt_order(stats_by_group.keys() | counts_by_group.keys())
+    groups = []
+    for judge in judges:
+        for prompt in prompts:
+            key = f"{judge}::{prompt}"
+            if key not in stats_by_group and key not in counts_by_group:
+                continue
+            groups.append(
+                {
+                    "key": key,
+                    "judge": judge,
+                    "prompt": prompt,
+                    "label": f"{model_label(judge)} - {prompt_label(prompt)}",
+                    "stats": stats_by_group.get(key, {}),
+                    "counts": counts_by_group.get(key, {}),
+                }
+            )
+    return groups
+
+
+def actual_judges(summary):
+    judges = summary.get("filtered_judge_models") or sorted(summary.get("by_judge", {}))
+    return [judge for judge in judges if summary.get("by_judge", {}).get(judge)]
+
+
+def prompt_order(keys):
+    prompts = {split_group_key(key)[1] for key in keys}
+    preferred = ["neutral_no_length", "standard_anti_length"]
+    ordered = [prompt for prompt in preferred if prompt in prompts]
+    ordered.extend(sorted(prompts - set(ordered)))
+    return ordered
+
+
+def split_group_key(key):
+    if "::" not in key:
+        return key, "unknown"
+    return key.split("::", 1)
+
+
+def percent_x(left, width, value):
+    value = max(-1.0, min(1.0, value))
+    return left + ((value + 1.0) / 2.0) * width
+
+
+def nice_count(value):
+    if value <= 10:
+        return 10
+    if value <= 20:
+        return 20
+    return ((value + 9) // 10) * 10
+
+
+def pct(value):
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.1f}%"
 
 
 def svg_text(x, y, text, size=14, color="#1f2933", weight="400", anchor="start"):
@@ -104,118 +338,9 @@ def svg_text(x, y, text, size=14, color="#1f2933", weight="400", anchor="start")
     )
 
 
-def count_values(judges, by_judge):
-    keys = [
-        ("long_wins", "#4c78a8"),
-        ("short_wins", "#b55d60"),
-        ("ties", "#6b6b6b"),
-        ("invalid", "#b0b0b0"),
-    ]
-    return [
-        [(by_judge.get(judge, {}).get(key, 0), color) for key, color in keys]
-        for judge in judges
-    ]
-
-
-def rate_values(judges, by_judge):
-    values = []
-    for judge in judges:
-        counts = by_judge.get(judge, {})
-        values.append(
-            [
-                ((counts.get("long_win_rate") or 0.0) * 100, "#4c78a8"),
-                ((counts.get("net_length_preference") or 0.0) * 100, "#6a8f5a"),
-            ]
-        )
-    return values
-
-
-def paired_pattern_values(judges, paired_by_judge):
-    keys = [
-        ("long_both_positions", "#4c78a8"),
-        ("position_A_both", "#d08b39"),
-        ("tie_both", "#6b6b6b"),
-        ("mixed_or_partial_tie", "#7f6bb2"),
-    ]
-    return [
-        [(paired_by_judge.get(judge, {}).get(key, 0), color) for key, color in keys]
-        for judge in judges
-    ]
-
-
-def render_panel(x, y, width, height, title, y_label, judges, values, max_value, allow_negative):
-    left = x + 58
-    top = y + 42
-    chart_width = width - 80
-    chart_height = height - 90
-    baseline = top + chart_height if not allow_negative else top + chart_height / 2
-    min_value = -100 if allow_negative else 0
-    scale = chart_height / (max_value - min_value)
-    group_width = chart_width / max(len(judges), 1)
-    bar_count = max((len(item) for item in values), default=1)
-    bar_width = min(18, group_width / (bar_count + 2))
-    parts = [
-        svg_text(x, y, title, 17, "#111111", "700"),
-        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + chart_height}" stroke="#111111"/>',
-        f'<line x1="{left}" y1="{baseline:.1f}" x2="{left + chart_width}" y2="{baseline:.1f}" stroke="#111111"/>',
-        svg_text(x, top + chart_height / 2, y_label, 13, "#111111", "400", "middle"),
-    ]
-    add_ticks(parts, left, top, chart_height, baseline, scale, max_value, allow_negative)
-    for index, judge in enumerate(judges):
-        center = left + group_width * index + group_width / 2
-        start = center - (bar_count * bar_width) / 2
-        for offset, (value, color) in enumerate(values[index] if index < len(values) else []):
-            y0 = baseline - (value * scale)
-            parts.append(
-                f'<rect x="{start + offset * bar_width:.1f}" y="{min(y0, baseline):.1f}" '
-                f'width="{bar_width - 2:.1f}" height="{abs(baseline - y0):.1f}" fill="{color}"/>'
-            )
-        parts.append(svg_text(center, top + chart_height + 24, model_label(judge), 12, "#111111", "400", "middle"))
-    return parts
-
-
-def add_ticks(parts, left, top, chart_height, baseline, scale, max_value, allow_negative):
-    step = 25 if allow_negative else max(1, int(max_value / 4) or 1)
-    ticks = list(range(0, int(max_value) + 1, step))
-    if allow_negative:
-        ticks.extend([-50, -100])
-    for tick in ticks:
-        y = baseline - (tick * scale)
-        if top <= y <= top + chart_height:
-            parts.append(f'<line x1="{left - 4}" y1="{y:.1f}" x2="{left}" y2="{y:.1f}" stroke="#111111"/>')
-            parts.append(svg_text(left - 8, y + 4, str(tick), 11, "#111111", "400", "end"))
-
-
-def render_outcome_legend(x, y):
-    items = [
-        ("Long", "#4c78a8"),
-        ("Short", "#b55d60"),
-        ("Tie", "#6b6b6b"),
-        ("Invalid", "#b0b0b0"),
-        ("Net preference", "#6a8f5a"),
-    ]
-    parts = [svg_text(x, y, "Legend", 14, "#111111", "700")]
-    for index, (label, color) in enumerate(items):
-        lx = x + index * 150
-        parts.append(f'<rect x="{lx}" y="{y + 18}" width="14" height="14" fill="{color}"/>')
-        parts.append(svg_text(lx + 20, y + 30, label, 13, "#111111"))
-    return parts
-
-
-def render_pair_legend(x, y):
-    items = [
-        ("Long both", "#4c78a8"),
-        ("A both", "#d08b39"),
-        ("Tie both", "#6b6b6b"),
-        ("Mixed", "#7f6bb2"),
-    ]
-    parts = [svg_text(x, y, "Swapped-pair legend", 14, "#111111", "700")]
-    for index, (label, color) in enumerate(items):
-        lx = x + index * 170
-        parts.append(f'<rect x="{lx}" y="{y + 18}" width="14" height="14" fill="{color}"/>')
-        parts.append(svg_text(lx + 20, y + 30, label, 13, "#111111"))
-    return parts
-
-
 def model_label(model):
     return MODEL_LABELS.get(model, model)
+
+
+def prompt_label(prompt):
+    return PROMPT_LABELS.get(prompt, prompt)

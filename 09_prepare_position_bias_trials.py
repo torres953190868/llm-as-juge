@@ -16,6 +16,10 @@ from length_bias_position import (
 )
 
 
+DEFAULT_EXCLUDED_QUESTION_IDS = (105, 107, 128, 136)
+DEFAULT_EXCLUSION_REASON = "known_empty_judge_response"
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         description="Build swapped A/B position-bias trials from MT-Bench answers."
@@ -26,6 +30,22 @@ def build_arg_parser():
     parser.add_argument("--answers-dir", default=DEFAULT_ANSWERS_DIR)
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--exclude-question-id",
+        dest="exclude_question_ids",
+        action="append",
+        type=int,
+        default=[],
+        help="Additional question_id to exclude from position-bias trials.",
+    )
+    parser.add_argument(
+        "--include-known-empty-response-questions",
+        action="store_true",
+        help=(
+            "Include MT-Bench questions that repeatedly produced empty judge "
+            "responses in DeepSeek/Xiaomi pilot runs."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -35,6 +55,33 @@ def limited_questions(questions, limit):
         return questions
     limited_ids = sorted(questions)[:limit]
     return {question_id: questions[question_id] for question_id in limited_ids}
+
+
+def excluded_question_ids(args):
+    excluded_ids = set(args.exclude_question_ids or [])
+    if not args.include_known_empty_response_questions:
+        excluded_ids.update(DEFAULT_EXCLUDED_QUESTION_IDS)
+    return excluded_ids
+
+
+def exclude_questions(questions, question_ids):
+    if not question_ids:
+        return questions, []
+
+    kept = {}
+    excluded = []
+    for question_id, question in questions.items():
+        if question_id in question_ids:
+            excluded.append(
+                {
+                    "question_id": question_id,
+                    "category": question.get("category"),
+                    "reason": DEFAULT_EXCLUSION_REASON,
+                }
+            )
+            continue
+        kept[question_id] = question
+    return kept, excluded
 
 
 def validate_inputs(questions_path, answers_dir, source_model_a, source_model_b):
@@ -61,6 +108,9 @@ def run(args):
 
     questions = load_questions(args.questions_path)
     questions = limited_questions(questions, args.limit)
+    loaded_question_count = len(questions)
+    excluded_ids = excluded_question_ids(args)
+    questions, excluded = exclude_questions(questions, excluded_ids)
     answers_a = load_model_answers(args.answers_dir, args.source_model_a)
     answers_b = load_model_answers(args.answers_dir, args.source_model_b)
     trials, skipped = build_position_trials(
@@ -70,6 +120,7 @@ def run(args):
         args.source_model_a,
         args.source_model_b,
     )
+    skipped = excluded + skipped
     metadata = preparation_metadata(
         args.questions_path,
         args.answers_dir,
@@ -77,9 +128,13 @@ def run(args):
         args.source_model_b,
         args.limit,
     )
+    metadata["excluded_question_ids"] = sorted(excluded_ids)
+    metadata["excluded_question_count"] = len(excluded)
+    metadata["exclusion_reason"] = DEFAULT_EXCLUSION_REASON
     attach_metadata(trials, metadata)
 
-    print(f"Loaded {len(questions)} questions")
+    print(f"Loaded {loaded_question_count} questions before exclusions")
+    print(f"Excluded {len(excluded)} questions")
     print(f"Loaded {len(answers_a)} answers for {args.source_model_a}")
     print(f"Loaded {len(answers_b)} answers for {args.source_model_b}")
     print(f"Built {len(trials)} position-bias trials")

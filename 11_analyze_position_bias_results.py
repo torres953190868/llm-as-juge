@@ -5,11 +5,13 @@ from math import comb
 
 from length_bias_common import read_jsonl
 from length_bias_metadata import run_metadata
+from position_bias_plotting import render_position_bias_svg
 
 
 DEFAULT_INPUT = "parsed_position_bias_judgments.jsonl"
 DEFAULT_OUTPUT_JSON = "position_bias_summary.json"
 DEFAULT_OUTPUT_TXT = "position_bias_summary.txt"
+DEFAULT_OUTPUT_IMAGE = "position_bias_summary.svg"
 
 
 def build_arg_parser():
@@ -19,6 +21,7 @@ def build_arg_parser():
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--output-json", default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--output-txt", default=DEFAULT_OUTPUT_TXT)
+    parser.add_argument("--output-image", default=DEFAULT_OUTPUT_IMAGE)
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -306,6 +309,8 @@ def run(args):
         json.dump(summary, f, ensure_ascii=False, indent=2)
     with open(args.output_txt, "w", encoding="utf-8") as f:
         f.write(text)
+    with open(args.output_image, "w", encoding="utf-8") as f:
+        f.write(render_position_bias_svg(summary))
 
 
 def main():
